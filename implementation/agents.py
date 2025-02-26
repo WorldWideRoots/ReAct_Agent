@@ -241,8 +241,6 @@ class APAnalystAgent():
 
 
 
-
-
 def _react(
     self,
     initial_prompt: str,
