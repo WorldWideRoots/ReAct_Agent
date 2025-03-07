@@ -378,3 +378,73 @@ def time_based_clustering_llm(
 
     # 5) Return the result
     return updated_clusters
+
+
+
+
+new_prompt1 = """
+You are the "time-based clustering" function in an alert aggregation system.
+
+Your job:
+
+(1) Look at current clusters and unassigned alerts.
+    - The current cluster state has a list of clusters, and each cluster may contain:
+      - "cluster_id"
+      - "alerts" (an array of alerts)
+      - "confidence"
+      - Optionally "start_time" and "end_time" representing the bounding interval
+    - There's also "unassigned_alerts" for alerts not yet placed in any cluster.
+
+(2) Decide if an unassigned alert belongs in an existing cluster, based on whether
+    its [first_event_time, last_event_time] interval overlaps significantly with 
+    the cluster's bounding interval (within ~{time_threshold_minutes} minutes).
+    - Each cluster can store "start_time" and "end_time" as the min and max time 
+      from all alerts in that cluster.
+    - If merging the new alert is within ~{time_threshold_minutes} minutes of the 
+      cluster's interval, you may unify them.
+    - Update cluster.start_time = min(cluster.start_time, alert.first_event_time)
+      and cluster.end_time = max(cluster.end_time, alert.last_event_time)
+    - **Max Span Rule**: A cluster's total time span (end_time - start_time)
+      must NOT exceed {max_span_minutes} minutes. 
+      If adding an alert would push it beyond {max_span_minutes}, do NOT unify —
+      create or keep a separate cluster.
+
+(3) If it doesn't fit, create a new cluster for it.
+    - For instance, if the time ranges don't overlap enough or if merging 
+      would break the max span limit, form a new cluster.
+
+(4) Only break or reorganize existing clusters if there's a strong time conflict
+    or if you find they truly don't belong together.
+    - Keep merges incremental and minimal.
+
+(5) For each cluster, maintain or update a 'confidence' (0.0 to 1.0) 
+    indicating how certain you are that these alerts belong together.
+    - If an unassigned alert's time range strongly overlaps with the cluster 
+      and the 'description' is semantically similar, you can keep or raise confidence.
+    - If it's borderline, reduce confidence or keep it moderate.
+    - **Brand-new single-alert cluster** must not exceed confidence=0.75. 
+      (If you add a second alert that strongly matches, you can raise it a bit.)
+
+(6) Use 'description' text if times are borderline. 
+    - If 'description' strongly hints they are related, unify them 
+      and slightly raise or maintain a decent confidence. 
+    - If 'description' differs, you might not unify or keep confidence lower.
+
+(7) Minimal disruption: Do NOT destroy or drastically alter existing clusters 
+    unless there's a clear reason (like conflicting intervals or complete mismatch).
+    - Aim for incremental improvement, preserving past logic.
+
+(8) (Omitted your detailed JSON format instructions here, since you’ll edit separately.)
+
+(9) Each alert object has these fields:
+    - alert_id, source_id, type, class, obj_class, severity, description,
+      first_event_time, last_event_time, last_state_change.
+    - Some may be empty. That's okay.
+
+(10) If you unify or merge clusters, adjust the 'confidence' accordingly.
+     - Also update cluster.start_time and cluster.end_time to be the min and max 
+       of all included alerts.
+     - Re-check that (end_time - start_time) ≤ {max_span_minutes} minutes. 
+       If merging would exceed it, revert and place the alert in a new cluster.
+
+"""
