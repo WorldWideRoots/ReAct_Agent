@@ -382,18 +382,13 @@ def time_based_clustering_llm(
 
 
 
-new_prompt1 = """
+time_based_new_prompt1 = """
 You are the "time-based clustering" function in an alert aggregation system.
 
 Your job:
 
-(1) Look at current clusters and unassigned alerts.
-    - The current cluster state has a list of clusters, and each cluster may contain:
-      - "cluster_id"
-      - "alerts" (an array of alerts)
-      - "confidence"
-      - Optionally "start_time" and "end_time" representing the bounding interval
-    - There's also "unassigned_alerts" for alerts not yet placed in any cluster.
+(1) Look at and understand current clusters and unassigned alerts.
+- The existing clusters may have been partially formed or updated by a time-based aggregator in a prior step.
 
 (2) Decide if an unassigned alert belongs in an existing cluster, based on whether
     its [first_event_time, last_event_time] interval overlaps significantly with 
@@ -448,3 +443,67 @@ Your job:
        If merging would exceed it, revert and place the alert in a new cluster.
 
 """
+
+
+
+topology_based_prompt_1 ="""
+You are the “topology-based clustering” function in an alert aggregation system.
+
+Your job:
+
+(1) Look at and understand current clusters and unassigned alerts.
+    - The existing clusters may have been partially formed or updated by a time-based aggregator in a prior step.
+
+(2) Acknowledge the multi-step ReAct pipeline.
+    - You are not the only aggregator. Time-based clustering or a final “reassess” step
+      may precede or follow this topology-based step.
+    - Only reorganize or break existing clusters if the new topology data strongly indicates
+      they belong differently. Avoid major upheavals of high-confidence clusters formed by time-based logic
+      unless there is a clear contradiction.
+
+(3) Examine the provided partial L2/L3 neighbor data for each device in the current alerts.
+    - Some devices (like cloud or AWS instances) may have no neighbors.
+    - For each alert’s “source_id,” see if it matches or is a direct neighbor of any device
+      within an existing cluster’s alerts. If so, consider unifying them.
+
+(4) Unify or Merge Based on Adjacency & Confidence:
+    - If an unassigned alert’s device is the same or a direct neighbor of devices in a cluster,
+      you may merge them, especially if the “description” also aligns.
+    - Confidence-based reorganization:
+      * If a cluster’s confidence is high (≥0.8), only merge or reorganize it if adjacency is
+        clearly relevant and the descriptions do not conflict.
+      * If a cluster’s confidence is moderate or low (≤0.7), you can more freely merge or reorganize it
+        if new adjacency data suggests they belong together.
+
+(5) Only break or reorganize existing clusters if there is a strong topological reason.
+    - Minimal disruption: do NOT destroy or drastically alter stable clusters formed by prior steps
+      unless the new adjacency evidence is clearly compelling.
+    - If multiple clusters revolve around adjacent or directly connected devices, you can unify them
+      provided it does not cause a conflict with time-based or other aggregator logic.
+
+(6) For each cluster, maintain or update “confidence” (0.0 to 1.0).
+    - If an unassigned alert’s device strongly matches (same device) or is a direct neighbor,
+      you may raise or maintain the cluster’s confidence accordingly.
+    - If it’s only a distant neighbor or the descriptions differ, unify at lower confidence or skip merging.
+    - For a brand-new single-alert cluster, cap the confidence at 0.75 (similar to time-based).
+    - If you unify two clusters, recalculate or set a new confidence that reflects the combined adjacency.
+
+(7) If no adjacency is found or it’s too weak:
+    - Create a new cluster for the alert, capping confidence at 0.75 if it’s a single alert.
+    - If a device is cloud or lacking adjacency, unify it only if the “description” strongly aligns
+      with an existing cluster’s problem. Otherwise, keep it separate.
+
+(8) Minimal Disruption & Return Final Clusters:
+    - Keep merges incremental and do not undo stable merges from previous logics 
+      unless absolutely necessary.
+    - Return the updated “clusters” and leftover “unassigned_alerts.”
+    - If you unify clusters, adjust membership, revise “confidence,”
+      and note the relevant device adjacency that guided your decision.
+    - The idea is each aggregator pass (time-based or topology-based) can refine clusters further; 
+      confidence gradually increases if merges remain unchallenged.
+
+Output an incremental improvement in “clusters” and any leftover “unassigned_alerts,” 
+  so subsequent passes (time-based or final reassess) can further refine if needed.
+"""
+
+
