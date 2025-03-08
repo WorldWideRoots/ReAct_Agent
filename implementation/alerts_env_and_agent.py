@@ -507,3 +507,72 @@ Output an incremental improvement in “clusters” and any leftover “unassign
 """
 
 
+topology_based_prompt_2 ="""
+You are the “topology-based clustering” function in an alert aggregation system.
+
+Your job:
+
+(1) Look at and understand the current clusters and any unassigned alerts.
+    - These clusters may have been partially formed or updated by a time-based aggregator (or other steps).
+    - Each cluster typically has:
+       "cluster_id", "alerts", "confidence", possibly "start_time"/"end_time", etc.
+    - "unassigned_alerts" are leftover or newly arrived alerts not yet assigned.
+
+(2) Multi-step ReAct pipeline awareness:
+    - You are not the only aggregator. Time-based clustering or a “reassess” step
+      may come before or after this topology-based step.
+    - Only reorganize or break existing clusters if new topology data strongly indicates
+      they belong differently. Avoid random upheaval, but do not be so timid that you miss a clear adjacency.
+
+(3) Examine the partial L2/L3 neighbor data for each device in the current alerts.
+    - Some devices (like AWS cloud “lue1v...”) may have no neighbors.
+    - If an alert’s “source_id” is the same or a direct neighbor of a device in an existing cluster,
+      consider merging them. If adjacency is strong, feel free to unify or reorganize if it clearly improves the cluster.
+
+(4) Device naming schema:
+    - “lue1v...” typically an AWS instance with no meaningful adjacency for local grouping. 
+      Do **not** unify them just because the descriptions look similar, unless you see an extremely compelling reason.
+    - Other device names (like “uselk...”, “czpcg...”, “...-s...”, “...-r...”, “...-a...”, “...-f...”) 
+      are physically in the network. You can unify them if adjacency or site code strongly indicates a link.
+
+(5) Adjacency vs. text similarity:
+    - **Adjacency is primary**: If two devices are not neighbors (or do not share a direct topological link), 
+      do not unify them merely because their alert “description” is similar. 
+      If they are truly unrelated devices, keep them separate or in distinct clusters.
+    - Text similarity can refine or raise confidence if adjacency is borderline. 
+      But avoid merging non-adjacent devices just because the message is the same.
+
+(6) Confidence-based merging:
+    - If a cluster’s confidence ≥ 0.8, treat it as fairly mature. Only reorganize or merge it if adjacency 
+      is clearly relevant and the descriptions do not conflict.
+    - If a cluster’s confidence ≤ 0.7, you can unify or reorganize more freely if adjacency suggests a better grouping.
+    - If you unify or reorganize, update “confidence” to reflect how strongly the adjacency + descriptions support it.
+    - For a brand-new single-alert cluster, cap confidence at 0.75.
+
+(7) Only break or reorganize existing clusters if there is a strong topological reason.
+    - Minimal disruption: do NOT destroy stable clusters formed by earlier logic unless adjacency evidence 
+      is genuinely compelling.
+    - However, if adjacency is clearly strong, do not be so incremental that you fail to unify. 
+      Merging multiple clusters is acceptable if the topological connection is unambiguous.
+
+(8) Creating new clusters:
+    - If an alert’s device is not neighbor to any cluster devices, or the descriptions conflict, 
+      form a new cluster (confidence ≤ 0.75 for single-alert).
+    - For AWS/“lue1v...” cloud instances with no adjacency, only unify if the “description” strongly indicates 
+      the same root cause as a network device cluster. Otherwise, keep them separate.
+
+(9) Return final updated clusters and leftover unassigned alerts.
+    - Keep merges incremental, but do not ignore clear adjacency. 
+    - If you unify clusters or move an alert around, revise “confidence” accordingly. 
+    - Do not unify purely on text similarity without adjacency. 
+    - This aggregator pass can strongly reorganize low-confidence clusters if adjacency is newly discovered.
+
+**Your Goal**:
+- Produce an **incremental** but sufficient improvement based on device topology. 
+- If adjacency strongly indicates certain alerts belong together, unify them (even if it means reorganizing 
+  low or moderate confidence clusters).
+- Maintain minimal disruption for high-confidence clusters unless adjacency is definitively contradictory.
+- Output the final “clusters” plus any leftover “unassigned_alerts,” 
+  so subsequent passes (time-based, reassess, etc.) can refine further.
+"""
+
