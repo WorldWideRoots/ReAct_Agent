@@ -554,6 +554,17 @@ Your job:
       * Avoid merging devices that have no adjacency (and no site-code or naming match) purely because the descriptions look similar.
       * If the naming strongly indicates a shared dependency (e.g., same site code + device type) even though partial adjacency data is incomplete, you can unify them at moderate confidence if it aligns with the problem description.
 
+(5) Unify or Merge Based on Adjacency & Confidence:
+    - For each unassigned alert, check if its source_id is the same as or a direct neighbor of any device in an existing cluster.
+    - In each existing cluster, perform a per-alert analysis:
+         * Determine the majority set of devices (i.e., the devices that appear as neighbors in most alerts of the cluster).
+         * If an alert's source_id is not part of this majority, then treat it as an outlier.
+         * Remove outlier alerts from the cluster, regardless of the overall confidence, and place them in a new cluster (capping the new cluster’s confidence at 0.75).
+    - Confidence-based reorganization:
+         * If a cluster’s confidence is high (≥ 0.8) due to time-based merging, do not reorganize it unless there is clear topological evidence.
+         * However, if even one or two alerts in a cluster do not share the common adjacency (as determined above), lower the confidence of the cluster and separate those alerts.
+
+      
 (6) Confidence-based merging:
     - If a cluster’s confidence ≥ 0.8, treat it as fairly mature. Only reorganize or merge if the new naming or adjacency data is clearly relevant.
     - If a cluster’s confidence ≤ 0.7, you can unify or reorganize more freely if the naming schema or adjacency suggests a better grouping.
@@ -580,5 +591,76 @@ Your job:
 - Maintain minimal disruption for high-confidence clusters unless naming or adjacency is definitively contradictory.
 - Output a final “clusters” + any leftover “unassigned_alerts,” so subsequent passes (time-based, reassess, etc.) can refine further.
 
+"""
+
+topology_based_prompt_3 = """
+You are the “topology-based clustering” function in an alert aggregation system.
+
+Your job:
+
+(1) Look at and understand the current clusters and unassigned alerts.
+    - The current state consists of:
+         • "clusters": a list of clusters, each with "cluster_id", "alerts", "confidence", and optionally "start_time"/"end_time".
+         • "unassigned_alerts": alerts not yet placed in any cluster.
+    - Each alert has at least:
+         alert_id, source_id, type, class, obj_class, severity, description,
+         first_event_time, last_event_time, last_state_change.
+    - Some fields (e.g., type, class, obj_class) may be empty.
+
+(2) Acknowledge that you operate within a multi-step ReAct pipeline.
+    - Previous steps (e.g., time-based clustering) or future “reassess” steps may have influenced the current clusters.
+    - Only reorganize or break existing clusters if new topology/dependency data clearly indicates a different grouping.
+    - Avoid major upheavals, especially for clusters with high confidence, unless topology data strongly contradicts them.
+
+(3) Examine the provided partial L2/L3 neighbor data for each device in the current alerts.
+    - For each alert’s "source_id", check the neighbor data to determine which devices are directly connected (neighbors) at layer L2 or L3.
+    - Note: Some devices (for example, AWS cloud instances whose names begin with "lue1v") may have no neighbors.
+
+(4) Leverage device naming and dependency information:
+    - Device names follow specific schemas that may imply site codes or device roles.
+    - For example, names like "uselk11s1-lla-000" or "czpcgs1-lab-oob-a-test" indicate physical network devices with site codes and type markers.
+    - In contrast, names starting with "lue1v" indicate AWS/cloud instances, which should not be grouped solely based on similar alert messages.
+    - Use naming-based hints only to support topological evidence—not as the primary criterion.
+
+(5) Merge alerts based on topology (adjacency) and confidence:
+    - For each unassigned alert, check if its "source_id" is the same as or a direct neighbor (per the provided L2/L3 data) of any device in an existing cluster.
+    - **IMPORTANT:** Topology is the primary driver. If the neighbor data does not show a direct connection, do not merge—even if the alert descriptions or device names appear similar.
+    - Use text similarity (e.g., similar "description") only as a secondary factor when the topology data is ambiguous.
+    - If merging is justified by clear neighbor relationships, update the cluster by adding the alert and recalculating the cluster’s bounding attributes.
+    - Adjust the cluster’s "confidence" based on the strength of the topological connection:
+         • If the cluster’s confidence is high (≥ 0.8), reorganize it only if the topology evidence is overwhelmingly strong.
+         • If the cluster’s confidence is moderate or low (≤ 0.7), you may merge more freely if the neighbor data supports it.
+         • For a brand-new cluster formed with a single alert, cap the confidence at 0.75.
+
+(6) Reorganize clusters only when there is strong topological or dependency evidence:
+    - Do not merge alerts or clusters solely on similar alert descriptions if the topology data does not confirm a direct neighbor relationship.
+    - If multiple clusters contain devices that are directly connected (or share the same site code via naming), merge them—but only if the merger does not disrupt high-confidence clusters.
+    - If an alert in a cluster does not share the expected topological relationship with the majority of devices (i.e., it is an outlier), remove it and place it in a separate cluster.
+
+(7) If an alert’s device shows no meaningful adjacency (or the neighbor data is missing/negative):
+    - Create a new cluster for that alert, again capping confidence at 0.75 for a single-alert cluster.
+    - For cloud devices (e.g., names starting with "lue1v"), do not merge them with local network clusters solely because of text similarity.
+
+(8) Minimal Disruption & Incremental Improvement:
+    - Maintain existing clusters as much as possible; only adjust or reorganize if the topology data clearly demands it.
+    - The merging process should be incremental. If a cluster is stable and has high confidence, do not reorganize it unless there is clear, compelling topological evidence.
+    - If you unify clusters or move an alert, recalculate or update "confidence" to reflect the strength of the combined adjacency and naming-based evidence.
+
+(9) Example:
+    - Suppose the topology data indicates:
+         • "deviceA" neighbors: ["deviceB", "deviceC"]
+         • "deviceB" neighbors: ["deviceA"]
+         • "deviceC" neighbors: ["deviceA"]
+         • "deviceD" has no listed neighbors.
+    - If alerts come from devices A, B, and D, even if the alert messages are similar, merge only the alerts from devices A and B. 
+    - Do not merge the alert from device D with the others because its source_id is not a neighbor.
+    - In such a case, the merged cluster for A and B may have a high confidence (e.g., 0.85), while device D would either remain unassigned or form a new cluster with confidence ≤ 0.75.
+
+**Your Goal**:
+- Produce an updated set of clusters that reflects strong topological and dependency relationships.
+- Prioritize the provided L2/L3 neighbor data as the primary basis for merging alerts.
+- Use device naming schema as a supporting factor for inferring dependencies, but do not merge solely on similar alert messages.
+- Update each cluster's "confidence" to reflect how strongly the devices are connected.
+- Return an incremental improvement in "clusters" and any leftover "unassigned_alerts" so that subsequent passes (time-based, reassess, etc.) can further refine the grouping.
 """
 
