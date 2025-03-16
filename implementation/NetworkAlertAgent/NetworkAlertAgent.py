@@ -197,6 +197,60 @@ class NetworkAlertAgent:
                 valid_format = True
                 if to_print:
                     print(f"DEBUG: Accepted action with empty brackets: {actual_action}")
+            
+            # Special handling for DirectReorganize with potentially malformed JSON
+            elif actual_action.startswith("DirectReorganize[") and "]" in actual_action:
+                try:
+                    # Extract the content between the first [ and the last ]
+                    param_start = actual_action.find("[") + 1
+                    param_end = actual_action.rfind("]")
+                    params_str = actual_action[param_start:param_end]
+                    
+                    # Try to parse it as JSON (will throw exception if invalid)
+                    # If this works, the JSON is valid
+                    json_params = json.loads(params_str)
+                    
+                    # Valid JSON, accept the action
+                    valid_format = True
+                    # Use the corrected format
+                    action_str = f"DirectReorganize[{json.dumps(json_params)}]"
+                    if to_print:
+                        print(f"DEBUG: Accepted DirectReorganize with valid JSON: {params_str}")
+                except json.JSONDecodeError as e:
+                    # JSON is invalid, but format is close - try to correct common errors
+                    if to_print:
+                        print(f"DEBUG: DirectReorganize has invalid JSON: {e}")
+                        print(f"Original params: {params_str}")
+                    
+                    # Common error correction attempts:
+                    try:
+                        # Try fixing single quotes
+                        corrected_str = params_str.replace("'", '"')
+                        json_params = json.loads(corrected_str)
+                        
+                        # Success! Use the corrected format
+                        valid_format = True
+                        action_str = f"DirectReorganize[{json.dumps(json_params)}]"
+                        if to_print:
+                            print(f"DEBUG: Fixed JSON by replacing single quotes: {corrected_str}")
+                    except:
+                        # Still invalid, one last heroic attempt - full regex-based JSON correction
+                        try:
+                            import re
+                            # Replace unquoted keys with quoted keys
+                            corrected_str = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', params_str)
+                            # Replace all single quotes with double quotes
+                            corrected_str = corrected_str.replace("'", '"')
+                            json_params = json.loads(corrected_str)
+                            
+                            # Success! Use the corrected format
+                            valid_format = True
+                            action_str = f"DirectReorganize[{json.dumps(json_params)}]"
+                            if to_print:
+                                print(f"DEBUG: Fixed JSON with advanced correction: {corrected_str}")
+                        except:
+                            # Give up - JSON is too broken
+                            pass
                 
             if not valid_format and to_print:
                 print(f"DEBUG: Invalid action: '{actual_action}'. Valid prefixes: {self.valid_prefixes}")
