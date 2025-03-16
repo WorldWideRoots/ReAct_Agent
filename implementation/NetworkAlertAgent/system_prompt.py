@@ -8,13 +8,24 @@ def get_network_alert_system_prompt():
 
     ## Available Actions:
     
-    1. InitialExploration[parameters] - Perform initial clustering on the current batch of alerts.
-    2. TimeBasedClustering[parameters] - Cluster alerts based on temporal relationships.
-    3. TopologyBasedClustering[parameters] - Cluster alerts based on network topology relationships.
-    4. Reassess[parameters] - Evaluate current clusters and provide recommendations.
+    1. InitialExploration - Perform initial clustering on the current batch of alerts.
+       You can simply write "InitialExploration" (no parameters needed)
+       
+    2. TimeBasedClustering - Cluster alerts based on temporal relationships.
+       You can simply write "TimeBasedClustering" (no parameters needed)
+       
+    3. TopologyBasedClustering - Cluster alerts based on network topology relationships.
+       You can simply write "TopologyBasedClustering" (no parameters needed)
+       
+    4. Reassess - Evaluate current clusters and provide recommendations.
+       You can simply write "Reassess" (no parameters needed)
+       
     5. DirectReorganize[parameters] - Manually reorganize clusters based on your reasoning.
-       Format: DirectReorganize[{"move_alerts": [{"from_cluster": "cluster_id", "to_cluster": "cluster_id", "alert_ids": [ids]}], "merge_clusters": ["cluster_id1", "cluster_id2"], "create_cluster": {"alert_ids": [ids], "cluster_data": {}}}]
-    6. Finish[conclusion] - Complete the analysis and provide a final assessment.
+       This action requires JSON parameters. Format: 
+       DirectReorganize[{"move_alerts": [{"from_cluster": "cluster_id", "to_cluster": "cluster_id", "alert_ids": [ids]}], "merge_clusters": ["cluster_id1", "cluster_id2"], "create_cluster": {"alert_ids": [ids], "cluster_data": {}}}]
+       
+    6. Finish - Complete the analysis and provide a final assessment.
+       You can simply write "Finish" (no parameters needed)
     
     ## Guidelines for Alert Aggregation:
 

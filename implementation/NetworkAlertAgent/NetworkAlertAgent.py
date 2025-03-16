@@ -1,6 +1,6 @@
 import json
 from typing import Union, List, Dict, Any
-import gymnasium as gym
+import gym
 import requests
 
 class NetworkAlertAgent:
@@ -114,6 +114,7 @@ class NetworkAlertAgent:
                 print(assistant_text)
             
             # Parse out Thought and Action from the LLM's output
+            thought_str = "No valid thought parsed"  # Default in case parsing fails
             try:
                 segments = assistant_text.split(f"\nAction {i}:")
                 if len(segments) == 2:
@@ -128,8 +129,18 @@ class NetworkAlertAgent:
                     self.react_messages.append({"role": "assistant", "content": f"Thought {i}: {thought_str}"})
                     self.react_messages.append({"role": "assistant", "content": f"Action {i}: {action_str}"})
                 else:
-                    raise ValueError("Assistant response not in expected Thought/Action format.")
-            
+                    # Try alternative parsing: just take first line as thought, rest as action
+                    lines = assistant_text.split('\n')
+                    if len(lines) > 1:
+                        thought_str = lines[0].strip()
+                        action_str = '\n'.join(lines[1:]).strip()
+                        
+                        # Add them to conversation
+                        self.react_messages.append({"role": "assistant", "content": f"Thought {i}: {thought_str}"})
+                        self.react_messages.append({"role": "assistant", "content": f"Action {i}: {action_str}"})
+                    else:
+                        raise ValueError("Assistant response not in expected Thought/Action format.")
+                
             except Exception as e:
                 # If parsing fails, attempt a fallback
                 n_badcalls += 1
@@ -146,10 +157,18 @@ class NetworkAlertAgent:
             
             # Verify the action format
             valid_format = False
+            # Check for actions with parameters
             for prefix in self.valid_prefixes:
                 if action_str.startswith(prefix) and action_str.endswith("]"):
                     valid_format = True
                     break
+            
+            # Also check for actions without parameters (just the action name)
+            valid_actions_without_params = [prefix.replace("[", "") for prefix in self.valid_prefixes]
+            if not valid_format and action_str in valid_actions_without_params:
+                valid_format = True
+                # Add empty brackets to standardize format
+                action_str = f"{action_str}[]"
             
             if not valid_format:
                 # Invalid action format

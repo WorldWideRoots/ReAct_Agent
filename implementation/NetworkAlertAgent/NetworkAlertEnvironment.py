@@ -196,12 +196,16 @@ class NetworkAlertEnvironment(gym.Env):
         return observation, reward, done, {"clusters": self.current_clusters}
     
     def _parse_action(self, action_str):
-        """Parse an action string into action name and parameters."""
+        """
+        Parse an action string into action name and parameters.
+        Handles both formats: "ActionName[parameters]" and "ActionName"
+        """
         if "[" in action_str and "]" in action_str:
             action_name = action_str.split("[")[0]
             action_params = action_str.split("[")[1].split("]")[0]
             return action_name, action_params
         else:
+            # No parameters provided
             return action_str, ""
     
     def _get_observation(self):
