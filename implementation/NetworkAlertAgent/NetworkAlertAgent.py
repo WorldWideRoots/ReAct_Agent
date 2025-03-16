@@ -162,26 +162,51 @@ class NetworkAlertAgent:
                 action_request_msg = f"Thought {i}: {fallback_thought}\nAction {i}:"
                 new_resp = self._llm(self.react_messages + [{"role": "user", "content": action_request_msg}])
                 action_str = new_resp["choices"][0]["message"]["content"].strip()
+                
+            # Clean up any quotation marks or extra whitespace the LLM might have added
+            # This helps with the exact matching of action names
+            action_str = action_str.strip()
+            if action_str.startswith('"') and action_str.endswith('"'):
+                action_str = action_str[1:-1].strip()
+            elif action_str.startswith("'") and action_str.endswith("'"):
+                action_str = action_str[1:-1].strip()
             
-            # Verify the action format
+            # Verify the action format - with better debugging
             valid_format = False
             
+            # For debugging, let's log what we're checking
+            actual_action = action_str.strip()
+            
             # Check for exact matches with action names (without parameters)
-            if action_str in self.valid_prefixes:
+            if actual_action in self.valid_prefixes:
                 valid_format = True
                 # Add empty brackets for consistency in internal processing
-                action_str = f"{action_str}[]"
+                action_str = f"{actual_action}[]"
+                if to_print:
+                    print(f"DEBUG: Accepted action without brackets: {actual_action}")
             
-            # Check for actions with parameters
-            if not valid_format:
-                for prefix in self.valid_prefixes_with_brackets:
-                    if action_str.startswith(prefix) and action_str.endswith("]"):
-                        valid_format = True
-                        break
+            # Check for actions with brackets
+            elif (any(actual_action.startswith(prefix + "[") for prefix in self.valid_prefixes) 
+                  and actual_action.endswith("]")):
+                valid_format = True
+                if to_print:
+                    print(f"DEBUG: Accepted action with brackets: {actual_action}")
+                    
+            # Check for actions with empty brackets
+            elif any(actual_action == f"{prefix}[]" for prefix in self.valid_prefixes):
+                valid_format = True
+                if to_print:
+                    print(f"DEBUG: Accepted action with empty brackets: {actual_action}")
+                
+            if not valid_format and to_print:
+                print(f"DEBUG: Invalid action: '{actual_action}'. Valid prefixes: {self.valid_prefixes}")
+                print(f"DEBUG: Is in valid prefixes: {actual_action in self.valid_prefixes}")
+                print(f"DEBUG: Starts with valid prefix + '[': {any(actual_action.startswith(prefix + '[') for prefix in self.valid_prefixes)}")
+                print(f"DEBUG: Ends with ']': {actual_action.endswith(']')}")
             
             if not valid_format:
                 # Invalid action format
-                obs_str = f"Invalid action: '{action_str}'. Please use one of these action names: {self.valid_prefixes}. For actions with parameters, use the format 'ActionName[parameters]'."
+                obs_str = f"Invalid action: '{actual_action}'. Valid actions are: {', '.join(self.valid_prefixes)}. You can also use '{self.valid_prefixes[0]}[]' format."
                 self.react_messages.append({"role": "system", "content": f"Observation {i}: {obs_str}"})
                 if to_print:
                     print(f"Observation {i}: {obs_str}")
