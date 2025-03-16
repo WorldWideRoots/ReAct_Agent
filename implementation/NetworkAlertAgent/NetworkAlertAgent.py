@@ -21,16 +21,21 @@ class NetworkAlertAgent:
         
         # Define valid prefixes if not provided
         if valid_prefixes is None:
+            # Use action names without brackets as the default
             self.valid_prefixes = [
-                "InitialExploration[",
-                "TimeBasedClustering[",
-                "TopologyBasedClustering[",
-                "Reassess[",
-                "DirectReorganize[",
-                "Finish["
+                "InitialExploration",
+                "TimeBasedClustering",
+                "TopologyBasedClustering",
+                "Reassess",
+                "DirectReorganize",
+                "Finish"
             ]
+            # Also add versions with brackets for backward compatibility
+            self.valid_prefixes_with_brackets = [f"{prefix}[" for prefix in self.valid_prefixes]
         else:
             self.valid_prefixes = valid_prefixes
+            self.valid_prefixes_with_brackets = [f"{prefix}[" if not prefix.endswith("[") else prefix 
+                                              for prefix in valid_prefixes]
             
         # Conversation history for the ReAct framework
         self.react_messages = []
@@ -67,6 +72,9 @@ class NetworkAlertAgent:
     def set_valid_prefixes(self, valid_prefixes: list):
         """Set the valid action prefixes for ReAct."""
         self.valid_prefixes = valid_prefixes
+        # Also generate the bracketed versions for backward compatibility
+        self.valid_prefixes_with_brackets = [f"{prefix}[" if not prefix.endswith("[") else prefix 
+                                          for prefix in valid_prefixes]
     
     def reset_env(self, valid_prefixes: list=None, *args, **kwargs):
         """Reset the environment and optionally set new valid prefixes."""
@@ -157,22 +165,23 @@ class NetworkAlertAgent:
             
             # Verify the action format
             valid_format = False
-            # Check for actions with parameters
-            for prefix in self.valid_prefixes:
-                if action_str.startswith(prefix) and action_str.endswith("]"):
-                    valid_format = True
-                    break
             
-            # Also check for actions without parameters (just the action name)
-            valid_actions_without_params = [prefix.replace("[", "") for prefix in self.valid_prefixes]
-            if not valid_format and action_str in valid_actions_without_params:
+            # Check for exact matches with action names (without parameters)
+            if action_str in self.valid_prefixes:
                 valid_format = True
-                # Add empty brackets to standardize format
+                # Add empty brackets for consistency in internal processing
                 action_str = f"{action_str}[]"
+            
+            # Check for actions with parameters
+            if not valid_format:
+                for prefix in self.valid_prefixes_with_brackets:
+                    if action_str.startswith(prefix) and action_str.endswith("]"):
+                        valid_format = True
+                        break
             
             if not valid_format:
                 # Invalid action format
-                obs_str = f"Invalid action: '{action_str}'. Please use one of {self.valid_prefixes}."
+                obs_str = f"Invalid action: '{action_str}'. Please use one of these action names: {self.valid_prefixes}. For actions with parameters, use the format 'ActionName[parameters]'."
                 self.react_messages.append({"role": "system", "content": f"Observation {i}: {obs_str}"})
                 if to_print:
                     print(f"Observation {i}: {obs_str}")
@@ -186,6 +195,9 @@ class NetworkAlertAgent:
             self.react_messages.append({"role": "system", "content": obs_str})
             
             if to_print:
+                # Safely print with fallback for undefined variables
+                if 'thought_str' not in locals():
+                    thought_str = "No thought captured"
                 print(f"Thought {i}: {thought_str}\nAction {i}: {action_str}\nObservation {i}: {obs}\n")
             
             # Check if we're done
