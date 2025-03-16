@@ -664,3 +664,259 @@ Your job:
 - Return an incremental improvement in "clusters" and any leftover "unassigned_alerts" so that subsequent passes (time-based, reassess, etc.) can further refine the grouping.
 """
 
+
+
+# examiner_prompt (the "reassess" step)
+
+examiner_prompt = """
+DO NOT SUMMARIZE OR ALTER THESE INSTRUCTIONS; USE THEM EXACTLY AS PROVIDED:
+
+You are the 'reassess' function in an alert aggregation system. You have the current cluster state, and you also see which alerts are unassigned.
+
+Your tasks:
+1) Examine the current clusters for potential mismatches or outliers. This can include:
+   - Alerts that obviously belong to a different cluster or appear entirely unrelated
+   - Clusters that might actually be merged if they share overlapping time or topological dependencies
+   - Overly large clusters that can be split
+2) Check if any unassigned alerts might in fact belong to an existing cluster.
+3) Provide suggestions on how to fix the clustering. For each suggestion:
+   - Indicate which alerts or clusters should be merged, split, or moved.
+   - If no changes are needed, state "No changes recommended."
+4) Also indicate the recommended “next action” for the pipeline:
+   - "time_based_clustering"
+   - "topology_based_clustering"
+   - "reorganize"
+   - "finish" (if everything looks good)
+   - or "no_action" (equivalent to “everything looks good”)
+
+Return your suggestions in plain text, but structure your recommendations in a short JSON snippet at the very end of your answer. For example:
+
+SUGGESTED_REORGANIZATION = {
+  "actions": [
+     {
+       "type": "merge",
+       "clusters": ["cluster_002", "cluster_003"]
+     },
+     {
+       "type": "move_alert",
+       "alert_id": 845198105,
+       "from_cluster": "cluster_002",
+       "to_cluster": "cluster_005"
+     }
+  ],
+  "recommended_next_action": "reorganize"
+}
+
+Remember that your goal is to ensure proper clustering to help identify the root causes of these alerts. Provide chain-of-thought reasoning in your text but ensure your final answer is consistent with these instructions.
+"""
+
+def examiner_llm(self, history=[], temperature=0.01):
+    if not isinstance(self.current_clusters, dict):
+        raise TypeError("current_clusters must be a dictionary")
+
+    if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
+        raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
+
+    # Serialize data for the prompt
+    try:
+        clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
+        unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
+        current_alerts_batch_str = json.dumps(self.current_alerts_batch)
+
+    except Exception as e:
+        print(f'Error while serializing current_clusters: {e}')
+        return None, history
+
+    system_instructions = prompts.examiner_prompt  # This is the string above
+
+    user_message_text = f"""
+    This is complete batch of alerts during current time window:
+    {current_alerts_batch_str}
+
+    This is the current cluster in JSON format:
+    {clusters_data}
+
+    And here are the list of alert_ids of unassigned alerts that are currently not in any cluster:
+    {unassigned_alerts_data}
+
+    Please think through the problem step by step.
+    Identify any uncertainty and unclear reasoning.
+    Then suggest reorganizations if needed, and specify the recommended next action.
+    """
+
+    messages = [
+        {"role": "system", "content": system_instructions},
+        {"role": "user", "content": user_message_text}
+    ]
+
+    history += messages
+
+    # Make the LLM call
+    reply = self._llm(history, temperature=temperature, model=self.llm_model)
+    if 'choices' in reply and len(reply['choices']) > 0:
+        answer = reply['choices'][0]['message']['content']
+        history.append({"role": "assistant", "content": answer})
+        return answer, history
+    else:
+        print("Invalid response from API")
+        return None, history
+
+
+answer, history = self.examiner_llm(history)
+
+# Now parse the suggestions out of the text
+# Typically you'd do something like a regex to find the substring from:
+#  SUGGESTED_REORGANIZATION = { ... } 
+# Or parse a final JSON block if you trust the LLM to format valid JSON.
+
+if answer is not None:
+    # find the block after 'SUGGESTED_REORGANIZATION = '
+    # load it as JSON
+    import re
+    match = re.search(r'SUGGESTED_REORGANIZATION\s*=\s*(\{.*\})', answer, flags=re.DOTALL)
+    if match:
+        suggestion_str = match.group(1)
+        try:
+            suggestions = json.loads(suggestion_str)
+            # e.g. suggestions['actions'], suggestions['recommended_next_action']
+        except:
+            suggestions = None
+
+    # If suggestions is not None, proceed to handle them
+
+
+def reorganize_clusters(self, suggestions):
+    """
+    suggestions is a dict that might look like:
+    {
+      "actions": [
+         {
+           "type": "merge",
+           "clusters": ["cluster_002", "cluster_003"]
+         },
+         {
+           "type": "move_alert",
+           "alert_id": 845198105,
+           "from_cluster": "cluster_002",
+           "to_cluster": "cluster_005"
+         }
+      ],
+      "recommended_next_action": "reorganize"  # or "time_based_clustering", etc.
+    }
+    """
+    if "actions" not in suggestions:
+        return self.current_clusters  # no changes
+
+    actions = suggestions["actions"]
+    # Keep a quick reference so we can find clusters by ID easily
+    clusters_by_id = {c["cluster_id"]: c for c in self.current_clusters["clusters"]}
+
+    for action in actions:
+        atype = action.get("type")
+        
+        if atype == "merge":
+            # e.g. merges multiple clusters into the first cluster
+            cluster_ids_to_merge = action.get("clusters", [])
+            if len(cluster_ids_to_merge) < 2:
+                continue
+            primary_cluster_id = cluster_ids_to_merge[0]
+            for cid in cluster_ids_to_merge[1:]:
+                if cid not in clusters_by_id:
+                    continue
+                # Move all alerts from the cluster cid to the primary cluster
+                # Then remove cid from the self.current_clusters
+                src_cluster = clusters_by_id[cid]
+                primary_cluster = clusters_by_id[primary_cluster_id]
+
+                # combine alert_ids, source_ids, etc.
+                # be sure to unify them uniquely (no duplicates)
+                primary_cluster["alert_ids"] = list(set(primary_cluster["alert_ids"] + src_cluster["alert_ids"]))
+                primary_cluster["source_ids"] = list(set(primary_cluster["source_ids"] + src_cluster["source_ids"]))
+
+                # remove the cluster cid from the list
+                self.current_clusters["clusters"] = [c for c in self.current_clusters["clusters"] 
+                                                     if c["cluster_id"] != cid]
+                # Also remove from dictionary
+                clusters_by_id.pop(cid, None)
+
+            # Recompute bounding time or confidence if needed ...
+            # e.g.:
+            # primary_cluster["time"]["start"] = min( your new min time among all alerts )
+            # primary_cluster["time"]["end"]   = max( your new max time among all alerts )
+            # possibly re-set "confidence" if you want to.
+
+        elif atype == "move_alert":
+            # e.g. move a single alert from one cluster to another
+            alert_id = action.get("alert_id")
+            from_cid = action.get("from_cluster")
+            to_cid = action.get("to_cluster")
+            if (from_cid in clusters_by_id) and (to_cid in clusters_by_id):
+                from_cluster = clusters_by_id[from_cid]
+                to_cluster   = clusters_by_id[to_cid]
+
+                # remove alert from 'from_cluster'
+                from_cluster["alert_ids"] = [aid for aid in from_cluster["alert_ids"] if aid != alert_id]
+
+                # add alert to 'to_cluster'
+                if alert_id not in to_cluster["alert_ids"]:
+                    to_cluster["alert_ids"].append(alert_id)
+
+                # recalc times, confidence, etc., as needed
+
+        # you can add more action types, like "split", etc.
+
+    return self.current_clusters
+
+
+answer, history = self.examiner_llm(history)
+if answer:
+    # parse JSON instructions from answer
+    suggestions = parse_suggestions_from(answer)
+    if not suggestions:
+        # no reorg suggestions, maybe just move on
+        pass
+    else:
+        next_action = suggestions.get("recommended_next_action", "no_action")
+        if next_action == "reorganize":
+            self.current_clusters = self.reorganize_clusters(suggestions)
+        elif next_action == "time_based_clustering":
+            # call your time_based_clustering_llm(...)
+            pass
+        elif next_action == "topology_based_clustering":
+            # call your topology_based_clustering_llm(...)
+            pass
+        elif next_action == "finish":
+            # call your finish() or just end
+            pass
+        else:
+            # no_action or something else
+            pass
+
+
+def finish(self):
+    print("==== FINAL CLUSTERS ====")
+    print(json.dumps(self.current_clusters, indent=2))
+    # Potentially do more logging, or return self.current_clusters
+    return self.current_clusters
+
+def finish_llm(self, history=[], temperature=0.01):
+    system_instructions = """
+    You are the final summarizer. Summarize the final clusters and hypothesize the potential root cause(s).
+    """
+    user_message_text = f"""
+    The final clusters are:
+    {json.dumps(self.current_clusters, indent=2)}
+    Please produce a short summary in plain text.
+    """
+
+    messages = [
+        {"role": "system", "content": system_instructions},
+        {"role": "user", "content": user_message_text}
+    ]
+    history += messages
+    reply = self._llm(history, temperature=temperature, model=self.llm_model)
+    if 'choices' in reply and len(reply['choices']) > 0:
+        answer = reply['choices'][0]['message']['content']
+        print("=== Final summary ===")
+        print(answer)
+    return self.current_clusters

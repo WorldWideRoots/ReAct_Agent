@@ -1,0 +1,1231 @@
+import json
+from typing import List, Dict, Any, Tuple, Union
+import gymnasium as gym
+from gymnasium import spaces
+
+class NetworkAlertEnvironment(gym.Env):
+    """
+    Environment for network alert aggregation using ReAct framework.
+    This environment handles alert clustering and provides actions for exploring and analyzing alerts.
+    """
+    
+    def __init__(self, alerts=None, topology_info=None, llm_model="gpt-4"):
+        super(NetworkAlertEnvironment, self).__init__()
+        
+        # Store alerts and topology data
+        self.current_alerts_batch = alerts if alerts else []
+        self.topology_info = topology_info if topology_info else {}
+        
+        # LLM model to use for clustering
+        self.llm_model = llm_model
+        
+        # Current state of clusters
+        self.current_clusters = {"clusters": [], "unassigned_alerts": []}
+        
+        # History management
+        self.clustering_history = []  # Raw history of all clustering operations
+        self.function_histories = {   # Isolated histories for specific function types
+            "initial_exploration": [],
+            "time_based_clustering": [],
+            "topology_based_clustering": [],
+            "assess": []
+        }
+        self.react_history = []       # Summarized history for the ReAct framework
+        
+        # Recent reasoning from each clustering type (for context sharing)
+        self.recent_reasoning = {
+            "initial_exploration": "",
+            "time_based_clustering": "",
+            "topology_based_clustering": "",
+            "assess": ""
+        }
+        
+        # Define action space - using string commands for the ReAct framework
+        self.action_space = spaces.Discrete(6)  # 6 possible actions
+        
+        # Define observation space - text-based state
+        self.observation_space = spaces.Text(max_length=1000)
+        
+        # Action to text mapping
+        self.action_to_text = {
+            0: "InitialExploration",
+            1: "TimeBasedClustering",
+            2: "TopologyBasedClustering",
+            3: "Reassess",
+            4: "DirectReorganize",
+            5: "Finish"
+        }
+        
+        # History of actions and observations (for ReAct framework)
+        self.history = []
+    
+    def reset(self, alerts=None, topology_info=None):
+        """Reset the environment with new alerts and topology info if provided."""
+        if alerts:
+            self.current_alerts_batch = alerts
+        if topology_info:
+            self.topology_info = topology_info
+            
+        # Reset clusters and all histories
+        self.current_clusters = {"clusters": [], "unassigned_alerts": []}
+        self.clustering_history = []
+        self.history = []
+        self.react_history = []
+        
+        # Reset function-specific histories
+        for key in self.function_histories:
+            self.function_histories[key] = []
+            
+        # Reset recent reasoning
+        for key in self.recent_reasoning:
+            self.recent_reasoning[key] = ""
+        
+        # Create initial observation
+        observation = self._get_observation()
+        return observation
+    
+    def step(self, action):
+        """
+        Take a step in the environment using the provided action.
+        
+        Args:
+            action: String in format "ActionName[parameters]"
+        
+        Returns:
+            observation: Current state of the environment
+            reward: Reward for the action
+            done: Whether the episode is done
+            info: Additional information
+        """
+        # Parse the action string
+        action_name, action_params = self._parse_action(action)
+        
+        # Execute the action
+        if action_name == "InitialExploration":
+            result = self.initial_exploration()
+            observation = f"Initial exploration completed. Found {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
+            
+            # Add relevant reasoning context
+            if self.recent_reasoning["initial_exploration"]:
+                observation += f"\n\nKey insights from initial clustering:\n{self._extract_assessment_summary(self.recent_reasoning['initial_exploration'])}"
+        
+        elif action_name == "TimeBasedClustering":
+            result = self.time_based_clustering_llm()
+            observation = f"Time-based clustering completed. Now have {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
+            
+            # Add relevant reasoning context
+            if self.recent_reasoning["time_based_clustering"]:
+                observation += f"\n\nKey insights from time-based clustering:\n{self._extract_assessment_summary(self.recent_reasoning['time_based_clustering'])}"
+        
+        elif action_name == "TopologyBasedClustering":
+            result = self.topology_based_clustering_llm()
+            observation = f"Topology-based clustering completed. Now have {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
+            
+            # Add relevant reasoning context
+            if self.recent_reasoning["topology_based_clustering"]:
+                observation += f"\n\nKey insights from topology-based clustering:\n{self._extract_assessment_summary(self.recent_reasoning['topology_based_clustering'])}"
+        
+        elif action_name == "Reassess":
+            result, _ = self.assess_llm()
+            
+            # Extract recommendation from result
+            if result and 'choices' in result and len(result['choices']) > 0:
+                response_content = result['choices'][0]['message']['content']
+                
+                # Process the response to extract key insights and recommendations
+                assessment_summary = self._extract_assessment_summary(response_content)
+                recommendation = self._extract_recommendation(response_content)
+                
+                observation = f"Reassessment completed. Analysis provided the following guidance:\n\n{assessment_summary}\n\nRecommended next action: {recommendation}"
+            else:
+                observation = f"Reassessment completed, but no clear recommendation was provided."
+        
+        elif action_name == "DirectReorganize":
+            # Parse the parameters and perform manual reorganization
+            try:
+                params = json.loads(action_params)
+                self._direct_reorganize(params)
+                observation = "Manual reorganization completed based on provided parameters."
+                
+                # Add a summary of what was reorganized
+                summary = "Changes made:\n"
+                if "move_alerts" in params:
+                    summary += f"- Moved {sum(len(move['alert_ids']) for move in params['move_alerts'])} alerts\n"
+                if "merge_clusters" in params:
+                    summary += f"- Merged {len(params['merge_clusters'])} clusters\n"
+                if "create_cluster" in params:
+                    summary += f"- Created {1 if params['create_cluster'] else 0} new clusters\n"
+                
+                observation += f"\n{summary}"
+                
+                # Add this to ReAct history
+                self.react_history.append({
+                    "action": "DirectReorganize",
+                    "summary": summary
+                })
+            except Exception as e:
+                observation = f"Error in manual reorganization: {str(e)}"
+        
+        elif action_name == "Finish":
+            observation = "Alert aggregation process completed."
+            
+            # Add a final summary
+            if self.react_history:
+                observation += "\n\nSummary of clustering process:\n"
+                for i, entry in enumerate(self.react_history[-min(3, len(self.react_history)):]):
+                    if "summary" in entry:
+                        summary_first_line = entry["summary"].split('\n')[0]
+                        observation += f"{i+1}. {entry['action']}: {summary_first_line}\n"
+            
+            done = True
+            return observation, 0, True, {"clusters": self.current_clusters}
+        
+        else:
+            observation = f"Unknown action: {action_name}"
+        
+        # Store the action and result in history
+        self.history.append({
+            "action": action,
+            "observation": observation
+        })
+        
+        # Set done flag and reward
+        done = False
+        reward = 0  # Reward could be based on cluster quality metrics
+        
+        return observation, reward, done, {"clusters": self.current_clusters}
+    
+    def _parse_action(self, action_str):
+        """Parse an action string into action name and parameters."""
+        if "[" in action_str and "]" in action_str:
+            action_name = action_str.split("[")[0]
+            action_params = action_str.split("[")[1].split("]")[0]
+            return action_name, action_params
+        else:
+            return action_str, ""
+    
+    def _get_observation(self):
+        """Generate an observation of the current state."""
+        # Return a summary of current clusters and alerts
+        return (f"Current state: {len(self.current_clusters['clusters'])} clusters, "
+                f"{len(self.current_clusters['unassigned_alerts'])} unassigned alerts.")
+                
+    def _create_clustering_summary(self, clustering_type, clusters, response_content, max_length=500):
+        """
+        Create a concise summary of a clustering operation for the ReAct framework.
+        
+        Args:
+            clustering_type: The type of clustering performed (e.g., "initial_exploration")
+            clusters: The resulting clusters
+            response_content: The LLM's response content
+            max_length: Maximum length of the summary
+            
+        Returns:
+            str: A concise summary of the clustering operation
+        """
+        # Extract key information from clusters
+        num_clusters = len(clusters["clusters"]) if isinstance(clusters, dict) and "clusters" in clusters else 0
+        num_unassigned = len(clusters["unassigned_alerts"]) if isinstance(clusters, dict) and "unassigned_alerts" in clusters else 0
+        
+        # Extract reasoning from LLM response
+        reasoning = ""
+        reasoning_markers = ["reasoning:", "rationale:", "chain of thought:", "explanation:"]
+        lines = response_content.lower().split("\n")
+        
+        for i, line in enumerate(lines):
+            for marker in reasoning_markers:
+                if marker in line:
+                    # Extract a few lines after the marker
+                    reasoning_lines = lines[i:min(i+5, len(lines))]
+                    reasoning = " ".join(reasoning_lines)
+                    break
+            if reasoning:
+                break
+                
+        # If no explicit reasoning section, try to extract from the beginning
+        if not reasoning and len(lines) > 3:
+            reasoning = " ".join(lines[:3])
+        
+        # Limit reasoning length
+        if len(reasoning) > max_length:
+            reasoning = reasoning[:max_length] + "..."
+            
+        # Create a structured summary
+        summary = f"{clustering_type.replace('_', ' ').title()}:\n"
+        summary += f"- Created {num_clusters} clusters with {num_unassigned} unassigned alerts\n"
+        
+        # Add confidence information
+        confidence_sum = 0
+        confidence_count = 0
+        for cluster in clusters.get("clusters", []):
+            if "confidence" in cluster:
+                confidence_sum += float(cluster["confidence"])
+                confidence_count += 1
+                
+        if confidence_count > 0:
+            avg_confidence = confidence_sum / confidence_count
+            summary += f"- Average confidence: {avg_confidence:.2f}\n"
+            
+        # Add reasoning
+        if reasoning:
+            summary += f"- Key reasoning: {reasoning}\n"
+            
+        return summary
+        
+    def _get_clustering_summaries(self, max_summaries=3):
+        """
+        Get a combined summary of previous clustering steps for context.
+        
+        Args:
+            max_summaries: Maximum number of summaries to include
+            
+        Returns:
+            str: Combined summaries of previous clustering steps
+        """
+        # Get the most recent summaries
+        recent_summaries = self.react_history[-max_summaries:] if len(self.react_history) > 0 else []
+        
+        if not recent_summaries:
+            return "No previous clustering steps."
+            
+        # Combine summaries
+        combined = "Previous clustering steps:\n\n"
+        for entry in recent_summaries:
+            if "summary" in entry:
+                combined += entry["summary"] + "\n"
+                
+        return combined
+    
+    def _extract_assessment_summary(self, response_content):
+        """
+        Extract a concise assessment summary from the LLM response.
+        
+        Args:
+            response_content: The full text response from the LLM
+            
+        Returns:
+            str: A concise summary of the cluster assessment
+        """
+        # Look for sections that might contain the assessment
+        assessment_markers = [
+            "Assessment:", "Analysis:", "Evaluation:", "Current State:", 
+            "Cluster Analysis:", "Cluster Quality:"
+        ]
+        
+        lines = response_content.split('\n')
+        assessment_lines = []
+        in_assessment_section = False
+        
+        # Try to extract a structured assessment section
+        for line in lines:
+            line = line.strip()
+            
+            # Check if this line starts an assessment section
+            if any(marker in line for marker in assessment_markers):
+                in_assessment_section = True
+                assessment_lines.append(line)
+                continue
+                
+            # Check if we're leaving the assessment section (entering recommendation)
+            if in_assessment_section and any(x in line for x in ["Recommendation:", "Next Action:", "Next Step:"]):
+                in_assessment_section = False
+                continue
+                
+            # Add lines if we're in the assessment section
+            if in_assessment_section and line:
+                assessment_lines.append(line)
+        
+        # If we couldn't find a structured section, take a portion of the response
+        if not assessment_lines:
+            # Take the first 30% of the response as a fallback
+            words = response_content.split()
+            assessment_size = max(50, min(200, len(words) // 3))
+            assessment_lines = [' '.join(words[:assessment_size])]
+        
+        # Create a concise summary
+        assessment_summary = '\n'.join(assessment_lines)
+        
+        return assessment_summary
+    
+    def _extract_recommendation(self, response_content):
+        """
+        Extract the recommended next action from the LLM response.
+        
+        Args:
+            response_content: The full text response from the LLM
+            
+        Returns:
+            str: The recommended next action
+        """
+        # Look for direct recommendation markers
+        recommendation_markers = [
+            "Recommendation:", "Next Action:", "Next Step:", "Recommended Action:",
+            "I recommend", "You should", "The next step should be"
+        ]
+        
+        # First, try to find a specific action recommendation
+        action_types = ["TimeBasedClustering", "TopologyBasedClustering", "DirectReorganize", "Finish"]
+        
+        lines = response_content.split('\n')
+        for line in lines:
+            line = line.strip()
+            
+            # Check if any of the action types are mentioned in this line
+            for action in action_types:
+                if action in line:
+                    # If this is a DirectReorganize action with parameters, try to extract them
+                    if action == "DirectReorganize" and ("{" in line or "{" in response_content):
+                        # Try to extract the JSON parameters
+                        try:
+                            # Find the start of the JSON object
+                            json_start = response_content.find('{')
+                            if json_start != -1:
+                                # Extract from this point to the end and try to parse it
+                                json_text = response_content[json_start:]
+                                # Balance the brackets to find the end of the JSON
+                                bracket_count = 0
+                                for i, char in enumerate(json_text):
+                                    if char == '{':
+                                        bracket_count += 1
+                                    elif char == '}':
+                                        bracket_count -= 1
+                                        if bracket_count == 0:
+                                            json_text = json_text[:i+1]
+                                            break
+                                
+                                # Try to parse the JSON to validate it
+                                params = json.loads(json_text)
+                                return f"DirectReorganize[{json_text}]"
+                        except:
+                            # If we can't parse the JSON, just return the action type
+                            return f"{action}[]"
+                    
+                    # For other action types
+                    return f"{action}[]"
+        
+        # If we couldn't find a specific action recommendation, look for general recommendation text
+        for line in lines:
+            line = line.strip()
+            for marker in recommendation_markers:
+                if marker in line:
+                    # Return this line as the recommendation
+                    return line
+        
+        # Default fallback if no clear recommendation is found
+        return "No clear action recommendation found. Consider performing Reassess[] again with more detail."
+    
+    def _direct_reorganize(self, params):
+        """
+        Manually reorganize clusters based on provided parameters.
+        
+        Args:
+            params: Dictionary with reorganization instructions
+        """
+        if "move_alerts" in params:
+            for move in params["move_alerts"]:
+                src_cluster = move.get("from_cluster")
+                dst_cluster = move.get("to_cluster")
+                alert_ids = move.get("alert_ids", [])
+                
+                # Move alerts from unassigned to a cluster
+                if src_cluster == "unassigned" and dst_cluster != "unassigned":
+                    self._move_from_unassigned_to_cluster(alert_ids, dst_cluster)
+                
+                # Move alerts from a cluster to unassigned
+                elif src_cluster != "unassigned" and dst_cluster == "unassigned":
+                    self._move_from_cluster_to_unassigned(alert_ids, src_cluster)
+                
+                # Move alerts from one cluster to another
+                elif src_cluster != "unassigned" and dst_cluster != "unassigned":
+                    self._move_between_clusters(alert_ids, src_cluster, dst_cluster)
+        
+        if "merge_clusters" in params:
+            cluster_ids = params["merge_clusters"]
+            self._merge_clusters(cluster_ids)
+        
+        if "create_cluster" in params:
+            alert_ids = params["create_cluster"].get("alert_ids", [])
+            cluster_data = params["create_cluster"].get("cluster_data", {})
+            self._create_new_cluster(alert_ids, cluster_data)
+    
+    def _move_from_unassigned_to_cluster(self, alert_ids, dst_cluster_id):
+        """Move alerts from unassigned to a specific cluster."""
+        # Find the destination cluster
+        dst_cluster = None
+        for cluster in self.current_clusters["clusters"]:
+            if cluster["cluster_id"] == dst_cluster_id:
+                dst_cluster = cluster
+                break
+        
+        if not dst_cluster:
+            raise ValueError(f"Destination cluster {dst_cluster_id} not found")
+        
+        # Move alerts
+        for alert_id in alert_ids:
+            if alert_id in self.current_clusters["unassigned_alerts"]:
+                # Add alert to cluster
+                if isinstance(dst_cluster["alert_ids"], list):
+                    dst_cluster["alert_ids"].append(alert_id)
+                else:
+                    # If alert_ids is a string, convert to list
+                    alert_ids_str = dst_cluster["alert_ids"]
+                    dst_cluster["alert_ids"] = json.loads(alert_ids_str) if isinstance(alert_ids_str, str) else [alert_ids_str]
+                    dst_cluster["alert_ids"].append(alert_id)
+                
+                # Remove from unassigned
+                self.current_clusters["unassigned_alerts"].remove(alert_id)
+    
+    def _move_from_cluster_to_unassigned(self, alert_ids, src_cluster_id):
+        """Move alerts from a specific cluster to unassigned."""
+        # Find the source cluster
+        src_cluster = None
+        for cluster in self.current_clusters["clusters"]:
+            if cluster["cluster_id"] == src_cluster_id:
+                src_cluster = cluster
+                break
+        
+        if not src_cluster:
+            raise ValueError(f"Source cluster {src_cluster_id} not found")
+        
+        # Move alerts
+        for alert_id in alert_ids:
+            current_alert_ids = src_cluster["alert_ids"]
+            if isinstance(current_alert_ids, str):
+                current_alert_ids = json.loads(current_alert_ids) if '[' in current_alert_ids else [current_alert_ids]
+            
+            if alert_id in current_alert_ids:
+                # Remove from cluster
+                current_alert_ids.remove(alert_id)
+                src_cluster["alert_ids"] = current_alert_ids
+                
+                # Add to unassigned
+                self.current_clusters["unassigned_alerts"].append(alert_id)
+    
+    def _move_between_clusters(self, alert_ids, src_cluster_id, dst_cluster_id):
+        """Move alerts from one cluster to another."""
+        # Find source and destination clusters
+        src_cluster = None
+        dst_cluster = None
+        
+        for cluster in self.current_clusters["clusters"]:
+            if cluster["cluster_id"] == src_cluster_id:
+                src_cluster = cluster
+            if cluster["cluster_id"] == dst_cluster_id:
+                dst_cluster = cluster
+        
+        if not src_cluster:
+            raise ValueError(f"Source cluster {src_cluster_id} not found")
+        if not dst_cluster:
+            raise ValueError(f"Destination cluster {dst_cluster_id} not found")
+        
+        # Move alerts
+        for alert_id in alert_ids:
+            current_alert_ids = src_cluster["alert_ids"]
+            if isinstance(current_alert_ids, str):
+                current_alert_ids = json.loads(current_alert_ids) if '[' in current_alert_ids else [current_alert_ids]
+            
+            if alert_id in current_alert_ids:
+                # Remove from source cluster
+                current_alert_ids.remove(alert_id)
+                src_cluster["alert_ids"] = current_alert_ids
+                
+                # Add to destination cluster
+                if isinstance(dst_cluster["alert_ids"], list):
+                    dst_cluster["alert_ids"].append(alert_id)
+                else:
+                    # If alert_ids is a string, convert to list
+                    alert_ids_str = dst_cluster["alert_ids"]
+                    dst_cluster["alert_ids"] = json.loads(alert_ids_str) if isinstance(alert_ids_str, str) else [alert_ids_str]
+                    dst_cluster["alert_ids"].append(alert_id)
+    
+    def _merge_clusters(self, cluster_ids):
+        """Merge multiple clusters into one."""
+        if len(cluster_ids) < 2:
+            return
+        
+        # Find the clusters to merge
+        clusters_to_merge = []
+        for cluster_id in cluster_ids:
+            for cluster in self.current_clusters["clusters"]:
+                if cluster["cluster_id"] == cluster_id:
+                    clusters_to_merge.append(cluster)
+                    break
+        
+        if len(clusters_to_merge) < 2:
+            return
+        
+        # Use the first cluster as the base
+        base_cluster = clusters_to_merge[0]
+        
+        # Merge other clusters into the base cluster
+        for cluster in clusters_to_merge[1:]:
+            # Merge alert_ids
+            base_alert_ids = base_cluster["alert_ids"]
+            if isinstance(base_alert_ids, str):
+                base_alert_ids = json.loads(base_alert_ids) if '[' in base_alert_ids else [base_alert_ids]
+            
+            cluster_alert_ids = cluster["alert_ids"]
+            if isinstance(cluster_alert_ids, str):
+                cluster_alert_ids = json.loads(cluster_alert_ids) if '[' in cluster_alert_ids else [cluster_alert_ids]
+            
+            base_alert_ids.extend(cluster_alert_ids)
+            base_cluster["alert_ids"] = base_alert_ids
+            
+            # Merge source_ids
+            base_source_ids = base_cluster["source_ids"]
+            if isinstance(base_source_ids, str):
+                base_source_ids = base_source_ids.split(", ")
+            
+            cluster_source_ids = cluster["source_ids"]
+            if isinstance(cluster_source_ids, str):
+                cluster_source_ids = cluster_source_ids.split(", ")
+            
+            base_source_ids.extend(cluster_source_ids)
+            base_cluster["source_ids"] = ", ".join(set(base_source_ids))
+            
+            # Update time range
+            base_cluster["time"]["start"] = min(base_cluster["time"]["start"], cluster["time"]["start"])
+            base_cluster["time"]["end"] = max(base_cluster["time"]["end"], cluster["time"]["end"])
+            
+            # Update severity if needed
+            if cluster["severity"] > base_cluster["severity"]:
+                base_cluster["severity"] = cluster["severity"]
+            
+            # Update description
+            base_cluster["Description"] += f" Combined with: {cluster['Description']}"
+            
+            # Update confidence - average of the two
+            base_cluster["confidence"] = (base_cluster["confidence"] + cluster["confidence"]) / 2
+            
+            # Remove the merged cluster
+            self.current_clusters["clusters"].remove(cluster)
+    
+    def _create_new_cluster(self, alert_ids, cluster_data):
+        """Create a new cluster with the specified alerts."""
+        # Create a new cluster with the provided data
+        new_cluster = {
+            "cluster_id": cluster_data.get("cluster_id", f"cluster_{len(self.current_clusters['clusters']) + 1}"),
+            "chains of thoughts": cluster_data.get("chains_of_thoughts", "Manually created cluster"),
+            "source_ids": cluster_data.get("source_ids", ""),
+            "alert_ids": alert_ids,
+            "severity": cluster_data.get("severity", "medium"),
+            "time": cluster_data.get("time", {"start": 0, "end": 0}),
+            "confidence": cluster_data.get("confidence", 0.5),
+            "Description": cluster_data.get("Description", "Manually created cluster")
+        }
+        
+        # Add the new cluster
+        self.current_clusters["clusters"].append(new_cluster)
+        
+        # Remove alerts from unassigned if they're there
+        for alert_id in alert_ids:
+            if alert_id in self.current_clusters["unassigned_alerts"]:
+                self.current_clusters["unassigned_alerts"].remove(alert_id)
+    
+    def _llm(self, messages, temperature=0.01, model=None, **kwargs):
+        """
+        Call the LLM with the provided messages.
+        This is a placeholder - implement your actual LLM call here.
+        """
+        # This would call your LLM implementation (e.g., OpenAI API)
+        # For now, return a mock response
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "This is a mock LLM response for demonstration purposes."
+                    }
+                }
+            ]
+        }
+    
+    def initial_exploration(self, temperature=0.01):
+        """
+        Perform initial exploration clustering on the current batch of alerts.
+        Uses a dedicated history for this function and creates a summary for the ReAct framework.
+        """
+        # Get the function-specific history
+        history = self.function_histories.get("initial_exploration", [])
+        
+        # Serialize alert data
+        try:
+            current_alerts_batch_str = json.dumps(self.current_alerts_batch)
+            if not isinstance(current_alerts_batch_str, str):
+                raise TypeError('The serialized data is not a string')
+        except Exception as e:
+            print(f'Error while serializing current_alerts_batch: {e}')
+            return None
+
+        # Initialize conversation with system instructions
+        system_instructions = f"""
+        You are an advanced network engineer,
+        
+        [Your initial_exploration_prompt here]
+        
+        Here are some examples:
+        
+        [Your initial_exploration_fsl here]
+        
+        Please produce a detailed chain-of-thought that explains your reasoning, including any uncertainties and alternative approaches you considered.
+        
+        *** Before you finalize and return your result, please review the result once more with the clustering guide line and logic
+        """
+
+        user_message_text = f"""
+        You are an advanced network engineer trying to cluster alerts in the network system in order to find the root cause of the cluster of alerts (event).
+        
+        This is a complete batch of alerts during the current time window:
+        
+        {current_alerts_batch_str}
+        
+        Please provide the output clusters and any unassigned alerts in JSON format:
+        
+        [Your clustering_output_json_format here]
+        
+        Let's cluster the alerts step by step, thinking through a detailed chain-of-thought that explains your reasoning, the clustering should be with intent to help identifying the root cause, including any uncertainties or alternative approaches you considered.
+        """
+
+        messages = [
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": user_message_text}
+        ]
+
+        # Validate message content
+        for msg in messages:
+            msg_content = msg['content']
+            if not isinstance(msg_content, str):
+                raise ValueError(f'This content is not str: {msg_content}')
+        
+        # Append messages to the function-specific history
+        history += messages
+        self.function_histories["initial_exploration"] = history
+        
+        # For demonstration purposes, mock the LLM call
+        # In your actual implementation, you would call your LLM
+        # reply = self._llm(history, response_format={"type": "json_object"}, temperature=temperature, model=self.llm_model)
+        
+        # Mock reply for demonstration
+        reply = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({
+                            "clusters": [
+                                {
+                                    "cluster_id": "cluster_001",
+                                    "chains of thoughts": "Initial exploration clustering thought process",
+                                    "source_ids": "device1, device2",
+                                    "alert_ids": [1, 2, 3],
+                                    "severity": "high",
+                                    "time": {"start": 1741041666, "end": 1741045666},
+                                    "confidence": 0.65,
+                                    "Description": "Initial cluster description"
+                                }
+                            ],
+                            "unassigned_alerts": [4, 5]
+                        })
+                    }
+                }
+            ]
+        }
+
+        # Check for the response validity
+        if 'choices' in reply and len(reply['choices']) > 0:
+            response_content = reply['choices'][0]['message']['content']
+            history.append({"role": "assistant", "content": response_content})
+            self.function_histories["initial_exploration"] = history
+            
+            # Store response in recent reasoning
+            self.recent_reasoning["initial_exploration"] = response_content
+            
+            # Parse clusters from response
+            try:
+                self.current_clusters = json.loads(response_content)
+            except Exception as e:
+                print(f"Failed to load the clusters: {e}")
+                
+            # Create a summary for the ReAct framework
+            summary = self._create_clustering_summary(
+                "initial_exploration", 
+                self.current_clusters,
+                response_content
+            )
+            
+            # Add to ReAct history
+            self.react_history.append({
+                "action": "InitialExploration",
+                "summary": summary
+            })
+        else:
+            print("Invalid response from API")
+            return None
+
+        return reply
+
+    def time_based_clustering_llm(self, temperature=0.01):
+        """
+        Perform time-based clustering on the current batch of alerts.
+        Uses a dedicated history for this function and creates a summary for the ReAct framework.
+        """
+        # Get the function-specific history
+        history = self.function_histories.get("time_based_clustering", [])
+        
+        # Ensure current_clusters is a dictionary
+        if not isinstance(self.current_clusters, dict):
+            raise TypeError("current_clusters must be a dictionary")
+
+        # Check for required keys
+        if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
+            raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
+
+        # Serialize the data
+        try:
+            # Prepare cluster data and unassigned alerts
+            clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
+            unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
+            current_alerts_batch_str = json.dumps(self.current_alerts_batch)
+
+            # Check that the serialized data is a string
+            if not isinstance(clusters_data, str) or not isinstance(unassigned_alerts_data, str) or not isinstance(current_alerts_batch_str, str):
+                raise TypeError('The serialized data is not a string')
+        except Exception as e:
+            print(f'Error while serializing current_clusters: {e}')
+            return None
+        
+        # Build the system instructions for the LLM - using string concatenation to avoid nested f-strings
+        previous_exploration = self.recent_reasoning["initial_exploration"][:500] if self.recent_reasoning["initial_exploration"] else "No previous clustering information available."
+        
+        system_instructions = """
+        You are the 'time-based clustering' function in an alert aggregation system.
+        
+        Previous clustering reasoning:
+        """ + previous_exploration + """
+        
+        Please produce a detailed chain-of-thought that explains your reasoning, including any uncertainties and alternative approaches you considered.
+        """
+        
+        user_message_text = f"""
+        This is complete batch of alerts during current time window:
+        
+        {current_alerts_batch_str}
+        
+        This is the current cluster in JSON format:
+        
+        {clusters_data}
+        
+        And here are the list of alert_ids of unassigned alerts that are currently not in any cluster (only the alert_ids are store, you can use the alert_id to retrieve the full alert info from current alerts batch):
+        
+        {unassigned_alerts_data}
+        
+        [Your time_based_clustering_instruction_prompt here]
+        
+        JSON output format:
+        
+        [Your clustering_output_json_format here]
+        
+        Please think through the problem step by step. Identify any uncertainty and unclearity.
+        """
+
+        messages = [
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": user_message_text}
+        ]
+
+        # Validate message content
+        for msg in messages:
+            msg_content = msg['content']
+            if not isinstance(msg_content, str):
+                raise ValueError(f'This content is not str: {msg_content}')
+        
+        # Append messages to the function-specific history
+        history += messages
+        self.function_histories["time_based_clustering"] = history
+        
+        # For demonstration purposes, mock the LLM call
+        # In your actual implementation, you would call your LLM
+        # reply = self._llm(history, response_format={"type": "json_object"}, temperature=temperature, model=self.llm_model)
+        
+        # Mock reply for demonstration
+        reply = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({
+                            "clusters": [
+                                {
+                                    "cluster_id": "cluster_001",
+                                    "chains of thoughts": "Time-based clustering thought process",
+                                    "source_ids": "device1, device2",
+                                    "alert_ids": [1, 2, 3],
+                                    "severity": "high",
+                                    "time": {"start": 1741041666, "end": 1741045666},
+                                    "confidence": 0.70,
+                                    "Description": "Time-based refined cluster description"
+                                }
+                            ],
+                            "unassigned_alerts": [4, 5]
+                        })
+                    }
+                }
+            ]
+        }
+
+        # Check for the response validity
+        if 'choices' in reply and len(reply['choices']) > 0:
+            response_content = reply['choices'][0]['message']['content']
+            history.append({"role": "assistant", "content": response_content})
+            self.function_histories["time_based_clustering"] = history
+            
+            # Store response in recent reasoning
+            self.recent_reasoning["time_based_clustering"] = response_content
+            
+            # Parse clusters from response
+            try:
+                self.current_clusters = json.loads(response_content)
+            except Exception as e:
+                print(f"Failed to load the clusters: {e}")
+                
+            # Create a summary for the ReAct framework
+            summary = self._create_clustering_summary(
+                "time_based_clustering", 
+                self.current_clusters,
+                response_content
+            )
+            
+            # Add to ReAct history
+            self.react_history.append({
+                "action": "TimeBasedClustering",
+                "summary": summary
+            })
+        else:
+            print("Invalid response from API")
+
+        return reply
+
+    def assess_llm(self, temperature=0.01):
+            """
+            Assess the current clustering state and provide recommendations for next steps.
+            
+            This function evaluates the current clusters and unassigned alerts, then provides
+            guidance on whether to:
+            1. Perform additional time-based clustering
+            2. Perform additional topology-based clustering
+            3. Directly reorganize specific alerts/clusters
+            4. Finish the aggregation process
+            
+            Returns:
+                tuple: (response from LLM, updated history)
+            """
+            # Get the function-specific history
+            history = self.function_histories.get("assess", [])
+            
+            # Validate current_clusters
+            if not isinstance(self.current_clusters, dict):
+                raise TypeError("current_clusters must be a dictionary")
+                
+            # Check for required keys
+            if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
+                raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
+                
+            # Prepare data for the LLM
+            try:
+                # Serialize clusters and unassigned alerts
+                clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
+                unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
+                current_alerts_batch_str = json.dumps(self.current_alerts_batch)
+                topology_info_str = json.dumps(self.topology_info, separators=(',', ': '), indent=1)
+                
+                # Verify serialization
+                if not all(isinstance(x, str) for x in [clusters_data, unassigned_alerts_data, current_alerts_batch_str, topology_info_str]):
+                    raise TypeError('The serialized data is not a string')
+            except Exception as e:
+                print(f'Error while serializing data: {e}')
+                return None, history
+                
+            # Get previous clustering summaries for context
+            clustering_context = self._get_clustering_summaries()
+            
+            # Create system instructions - avoid nested f-strings by using concatenation
+            system_instructions = """
+            You are an advanced network alert assessment system. Your task is to evaluate the current state of alert clusters
+            and provide specific recommendations for next steps in the aggregation process.
+            
+            Previous clustering steps have provided the following insights:
+            """ + clustering_context + """
+            
+            Examine the current clusters closely, focusing on:
+            1. Cluster quality - Are alerts appropriately grouped based on time and topology?
+            2. Unassigned alerts - Could any be included in existing clusters?
+            3. Potential merges - Are there clusters that should be combined?
+            4. Confidence levels - Are they appropriate based on evidence?
+            
+            After your assessment, provide a clear recommendation for the NEXT ACTION to take, choosing from:
+            1. TimeBasedClustering - If time-based relationships need further refinement
+            2. TopologyBasedClustering - If network topology relationships need further consideration
+            3. DirectReorganize - If specific alerts need to be manually moved or clusters merged
+            Include exact parameters for this action if recommended
+            4. Finish - If clusters appear complete and well-formed
+            
+            If recommending DirectReorganize, provide precise JSON parameters in the format:
+            {"move_alerts": [{"from_cluster": "cluster_id", "to_cluster": "cluster_id", "alert_ids": [ids]}], 
+            "merge_clusters": ["cluster_id1", "cluster_id2"], 
+            "create_cluster": {"alert_ids": [ids], "cluster_data": {}}
+            }
+            
+            Be decisive - prioritize providing a single clear recommendation based on your comprehensive assessment.
+            """
+            
+            # Create user message
+            user_message = f"""
+            Please assess the current state of alert clusters and provide a recommendation for the next step.
+            
+            CURRENT ALERT BATCH:
+            {current_alerts_batch_str}
+            
+            CURRENT CLUSTERS:
+            {clusters_data}
+            
+            UNASSIGNED ALERTS:
+            {unassigned_alerts_data}
+            
+            TOPOLOGY INFORMATION:
+            {topology_info_str}
+            
+            Please provide:
+            1. A detailed assessment of the current clusters
+            2. Analysis of any issues or opportunities for improvement
+            3. A specific recommendation for the next action to take (TimeBasedClustering, TopologyBasedClustering, DirectReorganize with parameters, or Finish)
+            """
+            
+            # Prepare messages for LLM
+            messages = [
+                {"role": "system", "content": system_instructions},
+                {"role": "user", "content": user_message}
+            ]
+            
+            # Validate messages
+            for msg in messages:
+                if not isinstance(msg["content"], str):
+                    raise ValueError(f"Message content is not a string: {msg['content']}")
+                    
+            # Add messages to function-specific history
+            history += messages
+            self.function_histories["assess"] = history
+            
+            # For demonstration purposes, mock the LLM call
+            # In your actual implementation, you would call your LLM
+            # reply = self._llm(history, temperature=temperature, model=self.llm_model)
+            
+            # Mock reply for demonstration
+            reply = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": """
+                            # Assessment of Current Clusters
+                            
+                            The current clustering appears to have effectively grouped related alerts based on both temporal and topological relationships. 
+                            
+                            ## Cluster Analysis:
+                            - Cluster cluster_001 shows strong cohesion with high confidence (0.85)
+                            - Time ranges are appropriately bounded within the 15-minute constraint
+                            - Topology connections between devices in clusters are valid
+                            
+                            ## Issues and Opportunities:
+                            1. There are still 2 unassigned alerts (IDs: 4, 5) that could potentially be incorporated
+                            2. The unassigned alerts appear to have minimal topological connection to existing clusters
+                            
+                            # Recommendation
+                            
+                            Based on the analysis, I recommend:
+                            
+                            DirectReorganize[{"move_alerts": [{"from_cluster": "unassigned", "to_cluster": "cluster_001", "alert_ids": [4]}], "create_cluster": {"alert_ids": [5], "cluster_data": {"cluster_id": "cluster_002", "confidence": 0.5, "Description": "New cluster from remaining unassigned alert"}}}]
+                            
+                            This will incorporate alert 4 into the existing cluster where it has some temporal overlap, and create a new cluster for alert 5 which appears distinct.
+                            """
+                        }
+                    }
+                ]
+            }
+            
+            # Validate response
+            if 'choices' in reply and len(reply['choices']) > 0:
+                response_content = reply['choices'][0]['message']['content']
+                history.append({"role": "assistant", "content": response_content})
+                self.function_histories["assess"] = history
+                
+                # Store response in recent reasoning
+                self.recent_reasoning["assess"] = response_content
+                
+                # Create a summary for the ReAct framework
+                summary = f"Assessment:\n- Evaluated {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts\n"
+                
+                # Extract recommendation
+                recommendation = self._extract_recommendation(response_content)
+                summary += f"- Recommended: {recommendation}\n"
+                
+                # Add to ReAct history
+                self.react_history.append({
+                    "action": "Reassess",
+                    "summary": summary
+                })
+                
+                return reply, history
+                
+            else:
+                print("Invalid response from LLM")
+                return None, history    
+    def topology_based_clustering_llm(self, temperature=0.01):
+        """
+        Perform topology-based clustering on the current batch of alerts.
+        Uses a dedicated history for this function and creates a summary for the ReAct framework.
+        """
+        # Get the function-specific history
+        history = self.function_histories.get("topology_based_clustering", [])
+        
+        # Ensure current_clusters is a dictionary
+        if not isinstance(self.current_clusters, dict):
+            raise TypeError("current_clusters must be a dictionary")
+            
+        # Ensure topology_info is a dictionary
+        if not isinstance(self.topology_info, dict):
+            raise TypeError("topology_info must be a dictionary")
+
+        # Check for required keys
+        if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
+            raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
+
+        # Serialize the data
+        try:
+            # Prepare cluster data and unassigned alerts
+            clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
+            unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
+            topology_info_str = json.dumps(self.topology_info, separators=(',', ': '), indent=1)
+            current_alerts_batch_str = json.dumps(self.current_alerts_batch)
+
+            # Check that the serialized data is a string
+            if not isinstance(clusters_data, str) or not isinstance(unassigned_alerts_data, str) or not isinstance(topology_info_str, str) or not isinstance(current_alerts_batch_str, str):
+                raise TypeError('The serialized data is not a string')
+        except Exception as e:
+            print(f'Error while serializing data: {e}')
+            return None
+        
+        # Gather context from previous clustering steps
+        previous_reasoning = ""
+        if self.recent_reasoning["time_based_clustering"]:
+            previous_reasoning += f"Time-based clustering reasoning:\n{self.recent_reasoning['time_based_clustering'][:300]}\n\n"
+        if self.recent_reasoning["initial_exploration"]:
+            previous_reasoning += f"Initial exploration reasoning:\n{self.recent_reasoning['initial_exploration'][:300]}"
+        
+        # Build the system instructions for the LLM - using string concatenation to avoid nested f-strings
+        system_instructions = """
+        You are the 'topology-and-dependency-based clustering' function in an alert aggregation system.
+        
+        This is the topology data description:
+        """ + topology_info_str + """
+        
+        Previous clustering reasoning:
+        """ + previous_reasoning + """
+        
+        [Your topology_based_clustering_instruction_prompt here]
+        
+        Please produce a detailed chain-of-thought that explains your reasoning, including any uncertainties and alternative approaches you considered.
+        
+        *** Before you finalize and return your result, please review the result once more with the clustering guide line and logic.
+        """
+        
+        user_message_text = f"""
+        This is complete batch of alerts during current time window:
+        
+        {current_alerts_batch_str}
+        
+        This is the current cluster in JSON format:
+        
+        {clusters_data}
+        
+        And here are the list of alert_ids of unassigned alerts that are currently not in any cluster (only the alert_ids are store, you can use the alert_id to retrieve the full alert info from current alerts batch):
+        
+        {unassigned_alerts_data}
+        
+        JSON output format:
+        
+        [Your clustering_output_json_format here]
+        
+        Please think through the problem step by step. Identify any uncertainty and unclearity.
+        """
+
+        messages = [
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": user_message_text}
+        ]
+
+        # Validate message content
+        for msg in messages:
+            msg_content = msg['content']
+            if not isinstance(msg_content, str):
+                raise ValueError(f'This content is not str: {msg_content}')
+        
+        # Append messages to the function-specific history
+        history += messages
+        self.function_histories["topology_based_clustering"] = history
+        
+        # For demonstration purposes, mock the LLM call
+        # In your actual implementation, you would call your LLM
+        # reply = self._llm(history, response_format={"type": "json_object"}, temperature=temperature, model=self.llm_model)
+        
+        # Mock reply for demonstration
+        reply = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({
+                            "clusters": [
+                                {
+                                    "cluster_id": "cluster_001",
+                                    "chains of thoughts": "Topology-based clustering thought process",
+                                    "source_ids": "device1, device2",
+                                    "alert_ids": [1, 2, 3],
+                                    "severity": "high",
+                                    "time": {"start": 1741041666, "end": 1741045666},
+                                    "confidence": 0.85,
+                                    "Description": "Topology-based refined cluster description"
+                                }
+                            ],
+                            "unassigned_alerts": [4, 5]
+                        })
+                    }
+                }
+            ]
+        }
+
+        # Check for the response validity
+        if 'choices' in reply and len(reply['choices']) > 0:
+            response_content = reply['choices'][0]['message']['content']
+            history.append({"role": "assistant", "content": response_content})
+            self.function_histories["topology_based_clustering"] = history
+            
+            # Store response in recent reasoning
+            self.recent_reasoning["topology_based_clustering"] = response_content
+            
+            # Parse clusters from response
+            try:
+                self.current_clusters = json.loads(response_content)
+            except Exception as e:
+                print(f"Failed to load the clusters: {e}")
+                
+            # Create a summary for the ReAct framework
+            summary = self._create_clustering_summary(
+                "topology_based_clustering", 
+                self.current_clusters,
+                response_content
+            )
+            
+            # Add to ReAct history
+            self.react_history.append({
+                "action": "TopologyBasedClustering",
+                "summary": summary
+            })
+        else:
+            print("Invalid response from API")
+
+        return reply
