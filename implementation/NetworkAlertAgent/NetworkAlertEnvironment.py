@@ -101,37 +101,25 @@ class NetworkAlertEnvironment(gym.Env):
             info: Additional information
         """
         # Parse the action string
-        action_name, action_params = self._parse_action(action)
-        
-        # Store the most recent assessment recommendation
-        recent_assessment = None
-        if len(self.react_history) > 0 and self.react_history[-1]["action"] == "Reassess":
-            recent_assessment = self.recent_reasoning.get("assess", "")
+        if "[" in action and "]" in action:
+            action_name = action.split("[")[0]
+            action_params = action.split("[")[1].split("]")[0]
+        else:
+            action_name = action
+            action_params = ""
         
         # Execute the action
         if action_name == "InitialExploration":
             result = self.initial_exploration()
             observation = f"Initial exploration completed. Found {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
-            
-            # Add relevant reasoning context
-            if self.recent_reasoning["initial_exploration"]:
-                observation += f"\n\nKey insights from initial clustering:\n{self._extract_assessment_summary(self.recent_reasoning['initial_exploration'])}"
         
         elif action_name == "TimeBasedClustering":
             result = self.time_based_clustering_llm()
             observation = f"Time-based clustering completed. Now have {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
-            
-            # Add relevant reasoning context
-            if self.recent_reasoning["time_based_clustering"]:
-                observation += f"\n\nKey insights from time-based clustering:\n{self._extract_assessment_summary(self.recent_reasoning['time_based_clustering'])}"
         
         elif action_name == "TopologyBasedClustering":
             result = self.topology_based_clustering_llm()
             observation = f"Topology-based clustering completed. Now have {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
-            
-            # Add relevant reasoning context
-            if self.recent_reasoning["topology_based_clustering"]:
-                observation += f"\n\nKey insights from topology-based clustering:\n{self._extract_assessment_summary(self.recent_reasoning['topology_based_clustering'])}"
         
         elif action_name == "Reassess":
             result, _ = self.assess_llm()
@@ -139,42 +127,29 @@ class NetworkAlertEnvironment(gym.Env):
             # Extract recommendation from result
             if result and 'choices' in result and len(result['choices']) > 0:
                 response_content = result['choices'][0]['message']['content']
-                
-                # Process the response to extract key insights and recommendations
-                assessment_summary = self._extract_assessment_summary(response_content)
-                recommendation = self._extract_recommendation(response_content)
-                
-                observation = f"Reassessment completed. Analysis provided the following guidance:\n\n{assessment_summary}\n\nRecommended next action: {recommendation}"
+                observation = f"Reassessment completed. Now have {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts.\n\n{response_content}"
             else:
                 observation = f"Reassessment completed, but no clear recommendation was provided."
         
         elif action_name == "Reorganize":
-            # Use the natural language reorganize function with the action params as instructions
-            result, _, changes_made = self.reorganize_llm(action_params or "", recent_assessment)
+            # Use simplified reorganize implementation
+            operations = self.reorganize(action_params)
             
-            if changes_made:
-                observation = "Reorganization completed based on instructions.\n\n"
-                observation += "Changes made:\n"
-                for change in changes_made:
-                    observation += f"- {change}\n"
-                
-                # Add a summary of current state
-                observation += f"\nCurrent state: {len(self.current_clusters['clusters'])} clusters, {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
-            else:
-                observation = "Reorganization attempted but no changes were identified or made."
+            # Format observation
+            observation = "Reorganization completed.\n\n"
+            observation += "Operations performed:\n"
+            for op in operations:
+                observation += f"- {op}\n"
+            
+            # Add current state
+            observation += f"\nCurrent state: {len(self.current_clusters['clusters'])} clusters, {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
         
         elif action_name == "Finish":
             observation = "Alert aggregation process completed."
             
             # Add a final summary
-            if self.react_history:
-                observation += "\n\nSummary of clustering process:\n"
-                for i, entry in enumerate(self.react_history[-min(3, len(self.react_history)):]):
-                    if "summary" in entry:
-                        summary_first_line = entry["summary"].split('\n')[0]
-                        observation += f"{i+1}. {entry['action']}: {summary_first_line}\n"
+            observation += f"\n\nFinal state: {len(self.current_clusters['clusters'])} clusters, {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
             
-            done = True
             return observation, 0, True, {"clusters": self.current_clusters}
         
         else:
@@ -188,7 +163,7 @@ class NetworkAlertEnvironment(gym.Env):
         
         # Set done flag and reward
         done = False
-        reward = 0  # Reward could be based on cluster quality metrics
+        reward = 0
         
         return observation, reward, done, {"clusters": self.current_clusters}
     
@@ -405,9 +380,6 @@ class NetworkAlertEnvironment(gym.Env):
         
         # Default fallback if no clear recommendation is found
         return "No clear action recommendation found. Consider performing Reassess[] again with more detail."
-    
-    # Removing the _direct_reorganize method since it's no longer needed
-
     
     def _move_from_unassigned_to_cluster(self, alert_ids, dst_cluster_id):
         """Move alerts from unassigned to a specific cluster."""
@@ -1157,6 +1129,159 @@ class NetworkAlertEnvironment(gym.Env):
         else:
             print("Invalid response from LLM")
             return None, history
+
+    def reorganize(self, instructions):
+        """
+        Simple implementation of reorganization based on clear, specific operations.
+        
+        Args:
+            instructions: String containing reorganization instructions
+            
+        Returns:
+            list: Operations performed
+        """
+        operations_performed = []
+        
+        # First, look for and execute cluster creation operations
+        if "create" in instructions.lower() and "cluster" in instructions.lower():
+            # Extract potential cluster ID
+            import re
+            cluster_id_match = re.search(r'cluster[_\s]*(\d+)', instructions)
+            
+            if cluster_id_match:
+                # If a specific ID is mentioned, use it
+                cluster_num = int(cluster_id_match.group(1))
+                cluster_id = f"cluster_{cluster_num:03d}"
+            else:
+                # Otherwise create a new cluster with the next available ID
+                cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
+            
+            # Extract alert IDs to include in the new cluster
+            alert_ids = []
+            # Look for large numbers that might be alert IDs (usually 6+ digits)
+            potential_alert_ids = [int(num) for num in re.findall(r'\b\d{6,}\b', instructions)]
+            
+            # Create the new cluster
+            cluster_data = {
+                "cluster_id": cluster_id,
+                "chains of thoughts": "Manually created cluster",
+                "source_ids": "",
+                "alert_ids": potential_alert_ids,
+                "severity": "medium",
+                "confidence": 0.5,
+                "time": {"start": 0, "end": 0},
+                "Description": "Manually created cluster"
+            }
+            
+            # Add the cluster to the current clusters
+            self.current_clusters["clusters"].append(cluster_data)
+            
+            # Remove the alerts from unassigned if they're there
+            for alert_id in potential_alert_ids:
+                if alert_id in self.current_clusters["unassigned_alerts"]:
+                    self.current_clusters["unassigned_alerts"].remove(alert_id)
+            
+            operations_performed.append(f"Created cluster {cluster_id} with {len(potential_alert_ids)} alerts")
+        
+        # Look for and execute move operations
+        if "move" in instructions.lower() and "alert" in instructions.lower() and "to" in instructions.lower():
+            # Extract alert IDs
+            alert_ids = [int(num) for num in re.findall(r'\b\d{6,}\b', instructions)]
+            
+            # Determine source and destination
+            if "unassigned" in instructions.lower() and "cluster" in instructions.lower():
+                # Find the cluster ID
+                cluster_match = re.search(r'cluster[_\s]*(\d+)', instructions)
+                if cluster_match:
+                    cluster_num = int(cluster_match.group(1))
+                    cluster_id = f"cluster_{cluster_num:03d}"
+                    
+                    # Determine direction
+                    if instructions.find("unassigned") < instructions.find("cluster"):
+                        # Moving from unassigned to cluster
+                        # Find the destination cluster
+                        dest_cluster = None
+                        for cluster in self.current_clusters["clusters"]:
+                            if cluster["cluster_id"] == cluster_id:
+                                dest_cluster = cluster
+                                break
+                        
+                        # If the cluster exists, move alerts to it
+                        if dest_cluster:
+                            for alert_id in alert_ids:
+                                if alert_id in self.current_clusters["unassigned_alerts"]:
+                                    # Add to cluster
+                                    if "alert_ids" not in dest_cluster:
+                                        dest_cluster["alert_ids"] = []
+                                    dest_cluster["alert_ids"].append(alert_id)
+                                    # Remove from unassigned
+                                    self.current_clusters["unassigned_alerts"].remove(alert_id)
+                            
+                            operations_performed.append(f"Moved {len(alert_ids)} alerts from unassigned to {cluster_id}")
+                    else:
+                        # Moving from cluster to unassigned
+                        # Find the source cluster
+                        source_cluster = None
+                        for cluster in self.current_clusters["clusters"]:
+                            if cluster["cluster_id"] == cluster_id:
+                                source_cluster = cluster
+                                break
+                        
+                        # If the cluster exists, move alerts from it
+                        if source_cluster and "alert_ids" in source_cluster:
+                            for alert_id in alert_ids:
+                                if alert_id in source_cluster["alert_ids"]:
+                                    # Remove from cluster
+                                    source_cluster["alert_ids"].remove(alert_id)
+                                    # Add to unassigned
+                                    self.current_clusters["unassigned_alerts"].append(alert_id)
+                            
+                            operations_performed.append(f"Moved {len(alert_ids)} alerts from {cluster_id} to unassigned")
+        
+        # Look for and execute merge operations
+        if "merge" in instructions.lower() and "cluster" in instructions.lower():
+            # Find all cluster IDs mentioned
+            cluster_matches = re.findall(r'cluster[_\s]*(\d+)', instructions)
+            
+            if len(cluster_matches) >= 2:
+                # Get the first two distinct cluster IDs
+                cluster_ids = []
+                for match in cluster_matches:
+                    cluster_id = f"cluster_{int(match):03d}"
+                    if cluster_id not in cluster_ids:
+                        cluster_ids.append(cluster_id)
+                    if len(cluster_ids) == 2:
+                        break
+                
+                # Find the clusters
+                clusters_to_merge = []
+                for cluster_id in cluster_ids:
+                    for cluster in self.current_clusters["clusters"]:
+                        if cluster["cluster_id"] == cluster_id:
+                            clusters_to_merge.append(cluster)
+                            break
+                
+                # If we found both clusters, merge them
+                if len(clusters_to_merge) == 2:
+                    base_cluster = clusters_to_merge[0]
+                    merge_cluster = clusters_to_merge[1]
+                    
+                    # Combine alert IDs
+                    if "alert_ids" not in base_cluster:
+                        base_cluster["alert_ids"] = []
+                    if "alert_ids" in merge_cluster:
+                        base_cluster["alert_ids"].extend(merge_cluster["alert_ids"])
+                    
+                    # Remove the merged cluster
+                    self.current_clusters["clusters"].remove(merge_cluster)
+                    
+                    operations_performed.append(f"Merged {cluster_ids[1]} into {cluster_ids[0]}")
+        
+        # If nothing happened, report it
+        if not operations_performed:
+            operations_performed.append("No operations were identified from the instructions")
+        
+        return operations_performed
             
     def reorganize_llm(self, instructions, recent_assessment=None, temperature=0.01):
         """
