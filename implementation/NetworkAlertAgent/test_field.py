@@ -1298,3 +1298,296 @@ Be sure to use the EXACT formatting shown above.
     }
     
     return 0, info  # Return 0 reward for simplicity
+
+
+
+
+# -------------------
+def _move_from_cluster_to_unassigned(self, alert_ids, src_cluster_id):
+    """Move alerts from a specific cluster to unassigned."""
+    # Find the source cluster
+    src_cluster = None
+    for cluster in self.current_clusters["clusters"]:
+        if cluster["cluster_id"] == src_cluster_id:
+            src_cluster = cluster
+            break
+    
+    if not src_cluster:
+        raise ValueError(f"Source cluster {src_cluster_id} not found")
+    
+    # Ensure alert_ids in the source cluster is a list
+    if "alert_ids" not in src_cluster:
+        src_cluster["alert_ids"] = []
+    
+    # Convert string representation of a list to an actual list if needed
+    if isinstance(src_cluster["alert_ids"], str):
+        try:
+            # Try to parse as JSON
+            src_cluster["alert_ids"] = json.loads(src_cluster["alert_ids"])
+        except json.JSONDecodeError:
+            # Fallback: handle string formats like "[1,2,3]" or "1, 2, 3"
+            clean_str = src_cluster["alert_ids"].strip('[]').replace(' ', '')
+            if clean_str:  # Only split if there's content
+                src_cluster["alert_ids"] = [int(aid) for aid in clean_str.split(',') if aid]
+            else:
+                src_cluster["alert_ids"] = []
+    
+    # Ensure unassigned_alerts is a list
+    if isinstance(self.current_clusters["unassigned_alerts"], str):
+        try:
+            # Try to parse as JSON
+            self.current_clusters["unassigned_alerts"] = json.loads(self.current_clusters["unassigned_alerts"])
+        except json.JSONDecodeError:
+            # Fallback: handle string formats like "[1,2,3]" or "1, 2, 3"
+            clean_str = self.current_clusters["unassigned_alerts"].strip('[]').replace(' ', '')
+            if clean_str:  # Only split if there's content
+                self.current_clusters["unassigned_alerts"] = [int(aid) for aid in clean_str.split(',') if aid]
+            else:
+                self.current_clusters["unassigned_alerts"] = []
+    
+    # Move alerts
+    for alert_id in alert_ids:
+        if alert_id in src_cluster["alert_ids"]:
+            # Remove from cluster
+            src_cluster["alert_ids"].remove(alert_id)
+            # Add to unassigned
+            self.current_clusters["unassigned_alerts"].append(alert_id)
+
+def _move_from_unassigned_to_cluster(self, alert_ids, dst_cluster_id):
+    """Move alerts from unassigned to a specific cluster."""
+    # Find the destination cluster
+    dst_cluster = None
+    for cluster in self.current_clusters["clusters"]:
+        if cluster["cluster_id"] == dst_cluster_id:
+            dst_cluster = cluster
+            break
+    
+    if not dst_cluster:
+        raise ValueError(f"Destination cluster {dst_cluster_id} not found")
+    
+    # Ensure alert_ids in the destination cluster is a list
+    if "alert_ids" not in dst_cluster:
+        dst_cluster["alert_ids"] = []
+    
+    # Convert string representation of a list to an actual list if needed
+    if isinstance(dst_cluster["alert_ids"], str):
+        try:
+            # Try to parse as JSON
+            dst_cluster["alert_ids"] = json.loads(dst_cluster["alert_ids"])
+        except json.JSONDecodeError:
+            # Fallback: handle string formats like "[1,2,3]" or "1, 2, 3"
+            clean_str = dst_cluster["alert_ids"].strip('[]').replace(' ', '')
+            if clean_str:  # Only split if there's content
+                dst_cluster["alert_ids"] = [int(aid) for aid in clean_str.split(',') if aid]
+            else:
+                dst_cluster["alert_ids"] = []
+    
+    # Ensure unassigned_alerts is a list
+    if isinstance(self.current_clusters["unassigned_alerts"], str):
+        try:
+            # Try to parse as JSON
+            self.current_clusters["unassigned_alerts"] = json.loads(self.current_clusters["unassigned_alerts"])
+        except json.JSONDecodeError:
+            # Fallback: handle string formats like "[1,2,3]" or "1, 2, 3"
+            clean_str = self.current_clusters["unassigned_alerts"].strip('[]').replace(' ', '')
+            if clean_str:  # Only split if there's content
+                self.current_clusters["unassigned_alerts"] = [int(aid) for aid in clean_str.split(',') if aid]
+            else:
+                self.current_clusters["unassigned_alerts"] = []
+    
+    # Move alerts
+    for alert_id in alert_ids:
+        if alert_id in self.current_clusters["unassigned_alerts"]:
+            # Add to cluster
+            dst_cluster["alert_ids"].append(alert_id)
+            # Remove from unassigned
+            self.current_clusters["unassigned_alerts"].remove(alert_id)
+
+
+def _ensure_list_format(self, alert_ids_value):
+    """Convert various alert_ids formats to a proper list."""
+    if alert_ids_value is None:
+        return []
+        
+    if isinstance(alert_ids_value, list):
+        return alert_ids_value
+        
+    if isinstance(alert_ids_value, str):
+        try:
+            # Try to parse as JSON
+            return json.loads(alert_ids_value)
+        except json.JSONDecodeError:
+            # Fallback: handle string formats like "[1,2,3]" or "1, 2, 3"
+            clean_str = alert_ids_value.strip('[]').replace(' ', '')
+            if clean_str:  # Only split if there's content
+                return [int(aid) for aid in clean_str.split(',') if aid]
+            else:
+                return []
+                
+    # For any other type, try conversion
+    return list(alert_ids_value)
+
+
+def reorganize(self, instructions, verbose=False):
+    """
+    Implement reorganization based on natural language instructions.
+    Support for multiple operations in a single instruction string.
+    """
+    try:
+        import re
+        operations_performed = []
+        
+        if verbose:
+            print(f"\n=== Processing Reorganization Instructions ===")
+            print(f"Instructions: {instructions}")
+        
+        # Check if instructions contain numbered operations
+        numbered_operations = re.findall(r'(?:\d+\.\s*)([^\d]+?)(?=\d+\.|$)', instructions)
+        
+        if numbered_operations:
+            if verbose:
+                print(f"• Found {len(numbered_operations)} numbered operations")
+            
+            # Process each operation separately
+            for i, op in enumerate(numbered_operations):
+                op = op.strip()
+                if op:
+                    if verbose:
+                        print(f"\n--- Operation {i+1}/{len(numbered_operations)} ---")
+                        print(f"• {op}")
+                    
+                    # Recursively call reorganize for each operation
+                    sub_results = self.reorganize(op, verbose=verbose)
+                    operations_performed.extend(sub_results)
+            
+            return operations_performed
+        
+        # If not numbered, process as a single operation
+        
+        # Look for cluster creation operations
+        if "create" in instructions.lower() and "cluster" in instructions.lower():
+            # Extract potential cluster ID
+            cluster_id_match = re.search(r'cluster[_\s]*(\d+)', instructions)
+            
+            if cluster_id_match:
+                # If a specific ID is mentioned, use it
+                cluster_num = int(cluster_id_match.group(1))
+                cluster_id = f"cluster_{cluster_num:03d}"
+            else:
+                # Otherwise create a new cluster with the next available ID
+                cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
+            
+            # Extract alert IDs to include in the new cluster
+            alert_ids = []
+            # Look for large numbers that might be alert IDs (usually 6+ digits)
+            potential_alert_ids = [int(num) for num in re.findall(r'\b\d{6,}\b', instructions)]
+            
+            if verbose:
+                print(f"• Creating cluster {cluster_id} with {len(potential_alert_ids)} alerts")
+            
+            # Create the new cluster
+            cluster_data = {
+                "cluster_id": cluster_id,
+                "chains of thoughts": "Manually created cluster",
+                "source_ids": "",
+                "alert_ids": potential_alert_ids,
+                "severity": "medium",
+                "confidence": 0.5,
+                "time": {"start": 0, "end": 0},
+                "Description": "Manually created cluster"
+            }
+            
+            # Add the cluster to the current clusters
+            self.current_clusters["clusters"].append(cluster_data)
+            
+            # Ensure unassigned_alerts is a list
+            self.current_clusters["unassigned_alerts"] = self._ensure_list_format(self.current_clusters["unassigned_alerts"])
+            
+            # Remove the alerts from unassigned if they're there
+            for alert_id in potential_alert_ids:
+                if alert_id in self.current_clusters["unassigned_alerts"]:
+                    self.current_clusters["unassigned_alerts"].remove(alert_id)
+            
+            operations_performed.append(f"Created cluster {cluster_id} with {len(potential_alert_ids)} alerts")
+        
+        # Look for move operations
+        elif "move" in instructions.lower() and "alert" in instructions.lower() and "to" in instructions.lower():
+            # Extract alert IDs - look for 6+ digit numbers (typical for alert IDs)
+            alert_ids = [int(num) for num in re.findall(r'\b\d{6,}\b', instructions)]
+            
+            if verbose:
+                print(f"• Found {len(alert_ids)} alerts to move")
+            
+            # Determine source and destination
+            if "unassigned" in instructions.lower() and "cluster" in instructions.lower():
+                # Find the cluster ID
+                cluster_matches = re.findall(r'cluster[_\s]*(\d+)', instructions)
+                if cluster_matches:
+                    cluster_num = int(cluster_matches[0])
+                    cluster_id = f"cluster_{cluster_num:03d}"
+                    
+                    # Determine direction (from unassigned to cluster or from cluster to unassigned)
+                    if instructions.lower().find("unassigned") < instructions.lower().find("cluster"):
+                        if verbose:
+                            print(f"• Moving {len(alert_ids)} alerts FROM unassigned TO {cluster_id}")
+                        
+                        # Moving from unassigned to cluster
+                        self._move_from_unassigned_to_cluster(alert_ids, cluster_id)
+                        operations_performed.append(f"Moved {len(alert_ids)} alerts from unassigned to {cluster_id}")
+                    else:
+                        if verbose:
+                            print(f"• Moving {len(alert_ids)} alerts FROM {cluster_id} TO unassigned")
+                        
+                        # Moving from cluster to unassigned
+                        self._move_from_cluster_to_unassigned(alert_ids, cluster_id)
+                        operations_performed.append(f"Moved {len(alert_ids)} alerts from {cluster_id} to unassigned")
+            elif "cluster" in instructions.lower() and instructions.lower().count("cluster") >= 2:
+                # Moving between clusters
+                # Find source and destination cluster IDs
+                cluster_matches = re.findall(r'cluster[_\s]*(\d+)', instructions)
+                if len(cluster_matches) >= 2:
+                    src_cluster_id = f"cluster_{int(cluster_matches[0]):03d}"
+                    dst_cluster_id = f"cluster_{int(cluster_matches[1]):03d}"
+                    
+                    if verbose:
+                        print(f"• Moving {len(alert_ids)} alerts FROM {src_cluster_id} TO {dst_cluster_id}")
+                    
+                    self._move_between_clusters(alert_ids, src_cluster_id, dst_cluster_id)
+                    operations_performed.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to {dst_cluster_id}")
+        
+        # Look for merge operations
+        elif "merge" in instructions.lower() and "cluster" in instructions.lower():
+            # Find all cluster IDs mentioned
+            cluster_matches = re.findall(r'cluster[_\s]*(\d+)', instructions)
+            
+            if len(cluster_matches) >= 2:
+                # Get the first two distinct cluster IDs
+                cluster_ids = []
+                for match in cluster_matches:
+                    cluster_id = f"cluster_{int(match):03d}"
+                    if cluster_id not in cluster_ids:
+                        cluster_ids.append(cluster_id)
+                    if len(cluster_ids) == 2:
+                        break
+                
+                if verbose:
+                    print(f"• Merging {cluster_ids[1]} into {cluster_ids[0]}")
+                
+                self._merge_clusters(cluster_ids)
+                operations_performed.append(f"Merged {cluster_ids[1]} into {cluster_ids[0]}")
+        
+        # If nothing happened, report it
+        if not operations_performed:
+            if verbose:
+                print("• No operations identified from instructions")
+            operations_performed.append("No operations were identified from the instructions")
+        
+        return operations_performed
+        
+    except Exception as e:
+        error_message = f"Error in reorganize: {str(e)}"
+        print(f"\n!!! ERROR: {error_message}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        return [error_message]
