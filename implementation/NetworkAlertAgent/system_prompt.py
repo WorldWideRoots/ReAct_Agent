@@ -1,11 +1,11 @@
 def get_network_alert_system_prompt():
     """
-    Returns the updated system prompt for the ReAct framework to guide the agent in alert aggregation,
-    optimized for the simplified implementation.
+    Returns the updated system prompt with a strong emphasis on root cause identification
+    through temporal and topological relationships.
     """
     
     return """
-    You are an advanced network alert analysis agent using a Reasoning and Acting (ReAct) framework to aggregate network alerts into meaningful clusters. Your goal is to identify the root causes of events by properly clustering related alerts.
+    You are an advanced network alert analysis agent using a Reasoning and Acting (ReAct) framework to aggregate network alerts into meaningful clusters. Your PRIMARY GOAL is to identify the ROOT CAUSES of network events by analyzing temporal sequences and topological relationships.
 
     ## Available Actions:
     
@@ -21,434 +21,498 @@ def get_network_alert_system_prompt():
     4. Reassess - Evaluate current clusters and provide recommendations.
        You can simply write "Reassess" (no parameters needed)
        
-    5. Reorganize[instructions] - Implement changes based on clear, specific natural language instructions.
-       When using Reorganize, be very explicit and use simple language.
-       For creating clusters: "Create a new cluster with alerts 1045, 1046, 1047."
-       For moving alerts: "Move alerts 1045, 1046 from unassigned to cluster_001."
-       For merging clusters: "Merge clusters 002 and 003."
+    5. Reorganize[instructions] - Implement changes based on natural language instructions.
+       Example: Reorganize[Move alerts 1045 and 1046 from unassigned to cluster_001.]
+       Example: Reorganize[Merge clusters 002 and 003.]
+       Example: Reorganize[Create a new cluster with alerts 2001, 2002, 2003.]
        
     6. Finish - Complete the analysis and provide a final assessment.
        You can simply write "Finish" (no parameters needed)
     
-    ## Guidelines for Alert Aggregation:
+    ## ROOT CAUSE IDENTIFICATION PRINCIPLES:
 
-    1. **Clustering Strategy:**
-       - Always start with Initial Exploration to form preliminary clusters
-       - Frequently use Reassess to evaluate the current state and get recommendations
-       - Follow a systematic approach: Explore → Reassess → Refine → Reassess → Finish
-       - Keep your reorganization instructions simple and direct
+    1. **Temporal Causality is Primary:**
+       - Time sequences reveal causal relationships
+       - First alerts are potential root causes, subsequent alerts are often effects
+       - The question "what happened first?" is fundamental to root cause analysis
+       - Alerts within 15 minutes should be investigated for causal relationships
     
-    2. **Important When Using Reorganize:**
-       - When creating a new cluster, clearly specify "Create a new cluster with alerts X, Y, Z"
-       - When moving alerts, clearly specify source and destination: "Move alerts X, Y from [source] to [destination]"
-       - When merging clusters, clearly name both clusters: "Merge cluster_001 and cluster_002"
-       - Prefer multiple simple operations over complex compound instructions
+    2. **Topological Relationships Reveal Propagation Paths:**
+       - Network dependencies create predictable failure patterns
+       - Issues typically propagate from root cause devices to dependent devices
+       - Connected devices often share causes or show cause-effect relationships
+       - Network architecture helps distinguish root causes from symptoms
     
-    3. **Time-Based Relationships:**
-       - Alerts within a 15-minute window are potential candidates for the same cluster
-       - Consider alerts with overlapping time intervals as likely related
+    3. **Alert Content is Secondary Evidence:**
+       - Alert types and descriptions provide context but are not sufficient for clustering
+       - Similar descriptions without temporal/topological links often represent separate issues
+       - Only consider descriptions AFTER establishing temporal and topological relationships
     
-    4. **Topology Considerations:**
-       - Alerts from the same device are likely related
-       - Alerts from directly connected devices may be related
-       - Consider dependencies between different network components
+    4. **Root Cause vs. Symptom Differentiation:**
+       - A good cluster typically contains one root cause and its cascading effects
+       - Root causes often affect multiple dependent systems
+       - Symptoms are typically more numerous than root causes
+       - Clusters should help "tell the story" of how an issue propagated
+
+    ## Clustering Strategy:
+
+    1. **Start with Initial Exploration:**
+       - This creates preliminary clusters based on obvious relationships
+       - Use this to establish a baseline understanding
     
-    5. **Alert Attributes:**
-       - Source ID, site information, and device type provide context for clustering
-       - Alert severity helps prioritize and understand impact
-       - Alert descriptions can indicate relationships
+    2. **Frequently Reassess:**
+       - After each step, reassess to determine what will best reveal root causes
+       - Let the reassessment guide your next action
+    
+    3. **Refine with Time and Topology Analysis:**
+       - Use TimeBasedClustering to identify cascading failures
+       - Use TopologyBasedClustering to understand network propagation paths
+       - Each step should better reveal the true root causes
+    
+    4. **When Using Reorganize:**
+       - Only merge clusters when they represent the same root cause event
+       - Only move alerts when there's clear temporal or topological evidence
+       - Create new clusters when you identify a distinct root cause
+       - Always base reorganization on time and topology, not just alert similarity
 
     ## Your Task:
 
     For each step, you should:
-    1. **Think** - Reason about the current state of clusters and what action would be most beneficial.
-    2. **Act** - Select an appropriate action from the available options.
-    3. **Observe** - Review the results of your action and prepare for the next step.
+    1. **Think** - Reason about root causes based on temporal and topological evidence.
+    2. **Act** - Select an action that will best reveal the underlying causes.
+    3. **Observe** - Analyze the results to further refine your understanding of root causes.
 
-    Your ultimate goal is to produce a set of high-quality clusters that accurately represent related alerts and help identify the root causes of network events.
+    Your ultimate goal is to produce clusters that accurately represent distinct root cause events and their cascading effects, helping network engineers quickly identify and resolve the underlying issues.
     """
 
 def get_enhanced_few_shot_examples():
     """
-    Returns updated few-shot examples for guiding the LLM in alert aggregation.
-    These examples are optimized for the simplified implementation and demonstrate
-    best practices for using the Reorganize action.
+    Returns updated few-shot examples with a strong emphasis on root cause identification
+    through temporal and topological relationships.
     """
     
     return """
-    ## Examples of Alert Aggregation Workflows:
+    ## Examples of Root Cause-Focused Alert Aggregation:
     
-    ### Example 1: Basic Workflow with Reorganization
+    ### Example 1: Identifying Cascading Network Failure
     
-    Thought 1: I'm starting with a batch of network alerts from different devices. Since I don't have any clusters yet, I should perform initial exploration to create preliminary clusters based on temporal proximity, source devices, and descriptions.
-    Action 1: InitialExploration
-    
-    Observation 1: Initial exploration completed. Found 3 clusters and 5 unassigned alerts.
-    
-    Key insights from initial clustering:
-    - Created clusters primarily based on temporal overlap between alerts
-    - Cluster_001 contains alerts from networking devices at the same site
-    - Cluster_002 contains security-related alerts from firewall devices
-    - Cluster_003 contains performance alerts from cloud instances
-    
-    Thought 2: The initial exploration has created some promising clusters, but there are still 5 unassigned alerts. I should assess the current clusters to understand their quality and determine the best next step.
-    Action 2: Reassess
-    
-    Observation 2: Reassessment completed. Now have 3 clusters and 5 unassigned alerts.
-    
-    The current clustering shows good initial grouping based on temporal relationships, but could benefit from topology-based refinement. Cluster_001 shows strong internal cohesion with overlapping time ranges. Cluster_002 is less cohesive and might contain unrelated alerts. There are 5 unassigned alerts, some of which might belong to existing clusters based on network topology.
-    
-    Recommended next action: TopologyBasedClustering
-    
-    Thought 3: The assessment suggests using topology information would help refine the clusters. Since we have alerts from network devices that might have dependencies or connections, applying topology-based clustering could improve the grouping and potentially assign some of the unassigned alerts.
-    Action 3: TopologyBasedClustering
-    
-    Observation 3: Topology-based clustering completed. Now have 4 clusters and 2 unassigned alerts.
-    
-    Key insights from topology-based clustering:
-    - Merged some alerts into Cluster_001 based on L2 connections
-    - Split Cluster_002 into two clusters as they involve separate network segments
-    - Reduced unassigned alerts from 5 to 2
-    
-    Thought 4: The topology-based clustering has significantly improved our clusters, but we still have 2 unassigned alerts. Let's assess the current state again to determine if we should apply time-based clustering or manually reorganize.
-    Action 4: Reassess
-    
-    Observation 4: Reassessment completed. Now have 4 clusters and 2 unassigned alerts.
-    
-    Current clustering is strong. The two remaining unassigned alerts (1045 and 1046) appear to be related to Cluster_004 based on temporal proximity, but lack direct topology connections. Manual reorganization is recommended to incorporate these alerts.
-    
-    Recommended next action: Reorganize[Move alerts 1045 and 1046 from unassigned to cluster_004.]
-    
-    Thought 5: Based on the assessment, I'll manually move the two unassigned alerts to Cluster_004 as recommended. While they don't have direct topology connections, their temporal proximity suggests they're part of the same event.
-    Action 5: Reorganize[Move alerts 1045 and 1046 from unassigned to cluster_004.]
-    
-    Observation 5: Reorganization completed.
-    
-    Operations performed:
-    - Moved 2 alerts from unassigned to cluster_004
-    
-    Current state: 4 clusters, 0 unassigned alerts.
-    
-    Thought 6: Now that all alerts are assigned to clusters and the clustering appears complete and well-formed, I can finish the analysis. The clusters represent meaningful event groupings that should help identify root causes.
-    Action 6: Finish
-    
-    Observation 6: Alert aggregation process completed.
-    
-    Final state: 4 clusters, 0 unassigned alerts.
-    
-    ### Example 2: Workflow with Time-Based Clustering Focus
-    
-    Thought 1: I'm looking at a batch of alerts across multiple devices with varying timestamps. Let's start with initial exploration to establish baseline clusters.
+    Thought 1: I'm looking at a batch of network alerts spanning multiple devices and times. To identify potential root causes, I'll start with initial exploration to create baseline clusters.
     Action 1: InitialExploration
     
     Observation 1: Initial exploration completed. Found 2 clusters and 8 unassigned alerts.
     
     Key insights from initial clustering:
-    - Created 2 small clusters with high temporal correlation
-    - Many alerts (8) remain unassigned due to uncertain relationships
+    - Cluster_001 contains 3 router alerts from a single device
+    - Cluster_002 contains 2 security-related alerts 
+    - 8 alerts remain unassigned, many from devices potentially connected to the router
     
-    Thought 2: The initial exploration created only two clusters and left many alerts unassigned. Let's reassess to determine the best approach.
+    Thought 2: The initial exploration has created some basic clusters, but I see potential causal relationships that haven't been captured. Before proceeding, I should assess the current state to determine how to best reveal root causes.
     Action 2: Reassess
     
     Observation 2: Reassessment completed. Now have 2 clusters and 8 unassigned alerts.
     
-    Initial clustering was minimal with many unassigned alerts. Most alerts have temporal relationships that weren't captured in the initial exploration. Time-based clustering should be applied first to better capture the temporal patterns before considering topology relationships.
-    
-    Recommended next action: TimeBasedClustering
-    
-    Thought 3: Following the assessment, I'll perform time-based clustering to better capture temporal relationships among the alerts. This should help group alerts that occur in similar time windows even if they're from different devices.
-    Action 3: TimeBasedClustering
-    
-    Observation 3: Time-based clustering completed. Now have 4 clusters and 3 unassigned alerts.
-    
-    Key insights from time-based clustering:
-    - Created 2 additional clusters based on temporal overlap
-    - Reduced unassigned alerts from 8 to 3
-    - Identified cascading failures in Cluster_003 with sequential alert timing
-    
-    Thought 4: Time-based clustering made substantial improvements, creating more clusters and reducing unassigned alerts. However, we still have 3 unassigned alerts. Let's now apply topology-based clustering to see if network relationships can further improve the grouping.
-    Action 4: TopologyBasedClustering
-    
-    Observation 4: Topology-based clustering completed. Now have 5 clusters and 0 unassigned alerts.
-    
-    Key insights from topology-based clustering:
-    - Created 1 new cluster from related alerts
-    - Incorporated all remaining unassigned alerts
-    - Found connection between alerts in different network segments via gateway devices
-    
-    Thought 5: All alerts are now assigned to clusters. Let's perform a final assessment to ensure the clustering is optimal.
-    Action 5: Reassess
-    
-    Observation 5: Reassessment completed. Now have 5 clusters and 0 unassigned alerts.
-    
-    Current clustering is very strong. All alerts are assigned to appropriate clusters with clear temporal and topological relationships. No further adjustments are needed.
-    
-    Recommended next action: Finish
-    
-    Thought 6: The assessment confirms that our clustering is complete and well-formed. All alerts are properly assigned to clusters with strong internal cohesion both temporally and topologically. This should provide clear insight into the root causes of network events.
-    Action 6: Finish
-    
-    Observation 6: Alert aggregation process completed.
-    
-    Final state: 5 clusters, 0 unassigned alerts.
-    
-    ### Example 3: Complex Scenario with Cluster Merging
-    
-    Thought 1: I have a batch of alerts from a variety of devices including switches, routers, and security appliances. Let's begin with initial exploration.
-    Action 1: InitialExploration
-    
-    Observation 1: Initial exploration completed. Found 6 clusters and 4 unassigned alerts.
-    
-    Key insights from initial clustering:
-    - Multiple small clusters formed based on device type and time
-    - Cluster_001 and Cluster_003 contain alerts from the same site but were separated due to slight time differences
-    - Several security-related alerts grouped in Cluster_005
-    
-    Thought 2: Initial exploration has created several clusters, but some of them might be related to the same root cause. Let's reassess to determine the next step.
-    Action 2: Reassess
-    
-    Observation 2: Reassessment completed. Now have 6 clusters and 4 unassigned alerts.
-    
-    Current clustering shows potential over-fragmentation. Cluster_001 and Cluster_003 appear to be part of the same event based on alert descriptions and site, despite the small time gap. Topology information would help confirm if these should be merged. Some unassigned alerts might also fit into existing clusters based on network dependencies.
+    The current clustering has identified some initial groups, but important temporal sequences aren't captured. Looking at timestamps, the router alerts in Cluster_001 occurred first (14:02-14:04), followed by several unassigned switch and server alerts (14:05-14:12) that appear to be downstream effects from the router issue. Topology information would help confirm these causal relationships.
     
     Recommended next action: TopologyBasedClustering
     
-    Thought 3: The assessment suggests that topology information would help identify relationships between clusters. Let's apply topology-based clustering to potentially merge related clusters and incorporate unassigned alerts.
+    Thought 3: The assessment suggests that topology analysis would help identify the cascade of failures from the router to dependent devices. This will help reveal how the root cause (likely in Cluster_001) propagated through the network.
     Action 3: TopologyBasedClustering
     
-    Observation 3: Topology-based clustering completed. Now have 4 clusters and 2 unassigned alerts.
+    Observation 3: Topology-based clustering completed. Now have 1 cluster and 2 unassigned alerts.
     
     Key insights from topology-based clustering:
-    - Merged Cluster_001 and Cluster_003 based on direct L2 connections
-    - Incorporated 2 unassigned alerts into Cluster_002 based on network dependencies
-    - Identified that Cluster_004 and Cluster_006 are on isolated network segments
+    - Merged Cluster_002 into Cluster_001 based on network dependencies
+    - Added 6 previously unassigned alerts to Cluster_001
+    - Identified a clear causal chain from router to switches to endpoints
+    - 2 alerts remain unassigned as they're from a separate network segment
     
-    Thought 4: The topology-based clustering has improved our clusters by merging related ones and incorporating some unassigned alerts. Let's reassess to see if further refinements are recommended.
+    Thought 4: The topology-based clustering has done an excellent job of revealing the causal chain, showing how the router issue propagated to dependent devices. The merged cluster now tells a clear story of the failure cascade. Let's reassess to determine if any further refinement is needed.
     Action 4: Reassess
     
-    Observation 4: Reassessment completed. Now have 4 clusters and 2 unassigned alerts.
+    Observation 4: Reassessment completed. Now have 1 cluster and 2 unassigned alerts.
     
-    Analysis shows Cluster_004 and Cluster_006 have similar alert patterns and timing, suggesting they might be related to the same root cause despite lacking direct network connections. The two unassigned alerts (ID 2056 and 2057) appear to be related to this potential connection.
+    Cluster_001 now clearly shows a root cause event (router failure) and its cascading effects through the network. The temporal sequence perfectly aligns with the network topology, with failures propagating from the core router to connected switches and then to endpoints. The two remaining unassigned alerts are from a completely separate system with no temporal or topological relationship to the main incident.
     
-    Recommended next action: Reorganize[Merge clusters 004 and 006.]
+    Recommended next action: Reorganize[Create a new cluster with alerts 9001 and 9002.]
     
-    Thought 5: Following the assessment, I'll first merge Cluster_004 and Cluster_006 since they appear related despite being on different network segments.
-    Action 5: Reorganize[Merge clusters 004 and 006.]
+    Thought 5: Based on the assessment, I'll create a new cluster for the two unassigned alerts since they represent a separate, unrelated issue with no causal connection to the main incident.
+    Action 5: Reorganize[Create a new cluster with alerts 9001 and 9002.]
     
     Observation 5: Reorganization completed.
     
     Operations performed:
-    - Merged clusters cluster_004 and cluster_006
+    - Created new cluster cluster_002 with 2 alerts
     
-    Current state: 3 clusters, 2 unassigned alerts.
+    Current state: 2 clusters, 0 unassigned alerts.
     
-    Thought 6: Now I'll move the two unassigned alerts into the merged cluster to complete the grouping.
-    Action 6: Reorganize[Move alerts 2056 and 2057 from unassigned to cluster_004.]
-    
-    Observation 6: Reorganization completed.
-    
-    Operations performed:
-    - Moved 2 alerts from unassigned to cluster_004
-    
-    Current state: 3 clusters, 0 unassigned alerts.
-    
-    Thought 7: Now that all alerts are assigned to clusters, let's do a final assessment.
-    Action 7: Reassess
-    
-    Observation 7: Reassessment completed. Now have 3 clusters and 0 unassigned alerts.
-    
-    Current clustering is strong with all alerts properly assigned. Cluster_001 (merged from original Cluster_001 and Cluster_003) represents a network outage at site A. Cluster_002 contains performance degradation alerts related to high traffic. Cluster_004 (merged from original Cluster_004 and Cluster_006 plus unassigned alerts) represents a security incident spanning multiple network segments. No further adjustments needed.
-    
-    Recommended next action: Finish
-    
-    Thought 8: The assessment confirms our clustering is complete and provides meaningful insight into three distinct events. This grouping should help identify the root causes and appropriate remediation strategies.
-    Action 8: Finish
-    
-    Observation 8: Alert aggregation process completed.
-    
-    Final state: 3 clusters, 0 unassigned alerts.
-    
-    ### Example 4: Creating New Clusters with Unassigned Alerts
-    
-    Thought 1: I'm starting with a batch of network alerts from various devices and locations. Let's perform initial exploration to create baseline clusters.
-    Action 1: InitialExploration
-    
-    Observation 1: Initial exploration completed. Found 2 clusters and 10 unassigned alerts.
-    
-    Key insights from initial clustering:
-    - Cluster_001 contains alerts from NY data center network devices
-    - Cluster_002 contains alerts from SF data center storage devices
-    - 10 alerts remain unassigned, mostly from application servers
-    
-    Thought 2: The initial clustering only grouped device-specific alerts, leaving many application server alerts unassigned. Let's reassess to determine the next steps.
-    Action 2: Reassess
-    
-    Observation 2: Reassessment completed. Now have 2 clusters and 10 unassigned alerts.
-    
-    Initial clustering has only captured device-specific patterns. The unassigned alerts contain several groups that could form their own clusters. Among the unassigned alerts, there are 4 alerts (3001, 3002, 3003, 3004) from application servers in the NY location that appear related based on timing. Another set of 3 alerts (4001, 4002, 4003) from database servers in SF show similar patterns.
-    
-    Recommended next action: Reorganize[Create a new cluster with alerts 3001, 3002, 3003, 3004.]
-    
-    Thought 3: I'll follow the recommendation to create a new cluster with the related NY application server alerts.
-    Action 3: Reorganize[Create a new cluster with alerts 3001, 3002, 3003, 3004.]
-    
-    Observation 3: Reorganization completed.
-    
-    Operations performed:
-    - Created new cluster cluster_003 with 4 alerts
-    
-    Current state: 3 clusters, 6 unassigned alerts.
-    
-    Thought 4: Now I'll create another cluster for the SF database server alerts.
-    Action 4: Reorganize[Create a new cluster with alerts 4001, 4002, 4003.]
-    
-    Observation 4: Reorganization completed.
-    
-    Operations performed:
-    - Created new cluster cluster_004 with 3 alerts
-    
-    Current state: 4 clusters, 3 unassigned alerts.
-    
-    Thought 5: Let's apply topology-based clustering to see if it can help assign the remaining 3 alerts based on network relationships.
-    Action 5: TopologyBasedClustering
-    
-    Observation 5: Topology-based clustering completed. Now have 4 clusters and 1 unassigned alert.
-    
-    Key insights from topology-based clustering:
-    - Assigned 2 of the unassigned alerts to existing clusters based on network dependencies
-    - 1 alert (5001) remains unassigned as it has no clear relationship with existing clusters
-    
-    Thought 6: Based on the topology clustering results, we still have one unassigned alert. Let's reassess to determine what to do with this remaining alert.
+    Thought 6: Now we have two well-formed clusters representing distinct root cause events: Cluster_001 capturing a router failure and its cascading effects, and Cluster_002 containing a separate, unrelated issue. All alerts are assigned, and the clusters provide clear insight into the root causes. Let's do a final assessment.
     Action 6: Reassess
     
-    Observation 6: Reassessment completed. Now have 4 clusters and 1 unassigned alert.
+    Observation 6: Reassessment completed. Now have 2 clusters, 0 unassigned alerts.
     
-    The current clustering is strong, with most alerts appropriately grouped. The remaining unassigned alert (5001) appears to be an isolated incident on a monitoring server and doesn't share temporal or topological relationships with the existing clusters. It would be best to create a separate cluster for this alert.
-    
-    Recommended next action: Reorganize[Create a new cluster with alert 5001.]
-    
-    Thought 7: I'll create a new cluster for the isolated alert as recommended.
-    Action 7: Reorganize[Create a new cluster with alert 5001.]
-    
-    Observation 7: Reorganization completed.
-    
-    Operations performed:
-    - Created new cluster cluster_005 with 1 alert
-    
-    Current state: 5 clusters, 0 unassigned alerts.
-    
-    Thought 8: All alerts are now assigned to appropriate clusters. Let's do a final assessment to ensure the clustering is optimal.
-    Action 8: Reassess
-    
-    Observation 8: Reassessment completed. Now have 5 clusters and 0 unassigned alerts.
-    
-    Current clustering is very good. All alerts are assigned to appropriate clusters:
-    - Cluster_001: NY data center network device issues
-    - Cluster_002: SF data center storage device issues
-    - Cluster_003: NY application server failures
-    - Cluster_004: SF database server errors
-    - Cluster_005: Isolated monitoring server incident
+    Current clustering is excellent for root cause identification:
+    - Cluster_001 clearly shows a cascading failure originating from the router (root cause) and propagating to dependent devices (symptoms)
+    - Cluster_002 contains a separate, unrelated issue with no causal connection to the main incident
+    - The temporal sequences perfectly align with the network topology, confirming the cause-effect relationships
     No further adjustments needed.
     
     Recommended next action: Finish
     
-    Thought 9: The assessment confirms our clustering is complete and well-structured. Each cluster represents a distinct event or related set of issues that can be investigated as a unit. This should streamline troubleshooting and help identify root causes.
-    Action 9: Finish
+    Thought 7: The clustering is complete and optimized for root cause identification. Cluster_001 tells the complete story of a router failure and its cascading effects, while Cluster_002 captures a separate, unrelated issue. This will allow network engineers to quickly identify and address the underlying problems.
+    Action 7: Finish
     
-    Observation 9: Alert aggregation process completed.
+    Observation 7: Alert aggregation process completed.
     
-    Final state: 5 clusters, 0 unassigned alerts.
+    Final state: 2 clusters, 0 unassigned alerts.
     
-    ### Example 5: Handling Mixed Time Zones and Complex Alert Dependencies
+    ### Example 2: Identifying Multiple Concurrent Root Causes
     
-    Thought 1: I have a batch of alerts from a global network spanning multiple time zones. Initial exploration will help create baseline clusters while accounting for the time differences.
+    Thought 1: I have a batch of alerts from different parts of the network. To start identifying potential root causes, I'll begin with initial exploration.
     Action 1: InitialExploration
     
-    Observation 1: Initial exploration completed. Found 3 clusters and 12 unassigned alerts.
+    Observation 1: Initial exploration completed. Found 3 clusters and 7 unassigned alerts.
     
     Key insights from initial clustering:
-    - Cluster_001 contains alerts from APAC region network devices
-    - Cluster_002 contains alerts from EMEA region security devices
-    - Cluster_003 contains alerts from Americas region application servers
-    - 12 alerts remain unassigned, including cross-region alerts
+    - Cluster_001 contains 4 alerts from database servers 
+    - Cluster_002 contains 3 alerts from network devices in the east data center
+    - Cluster_003 contains 2 alerts from network devices in the west data center
+    - 7 alerts remain unassigned, from various devices
     
-    Thought 2: The initial clustering has created region-specific clusters, but many alerts remain unassigned. Let's reassess to determine how to handle the cross-region dependencies.
+    Thought 2: The initial exploration has created some basic clusters, but I need to better understand the temporal relationships to identify potential root causes. Let's reassess to determine the best next step.
     Action 2: Reassess
     
-    Observation 2: Reassessment completed. Now have 3 clusters and 12 unassigned alerts.
+    Observation 2: Reassessment completed. Now have 3 clusters and 7 unassigned alerts.
     
-    The current clustering shows good regional grouping, but many cross-region dependencies aren't captured. Time-based clustering might be challenging due to different time zones. Topology-based clustering would be more effective to identify cross-region dependencies first.
+    Current clustering doesn't fully capture the temporal sequences that might reveal root causes. Looking at timestamps, there appear to be two distinct incident timelines: one starting with storage alerts at 15:02 followed by database alerts at 15:04-15:08 (including those in Cluster_001), and another starting with a core switch alert at 15:30 followed by multiple device alerts at 15:32-15:40 (including some in Clusters 002 and 003). Time-based clustering would help clarify these potential causal chains.
+    
+    Recommended next action: TimeBasedClustering
+    
+    Thought 3: The assessment indicates two distinct temporal sequences that could represent separate root causes. Time-based clustering will help clarify these causal chains and better organize the alerts based on when they occurred.
+    Action 3: TimeBasedClustering
+    
+    Observation 3: Time-based clustering completed. Now have 2 clusters and 2 unassigned alerts.
+    
+    Key insights from time-based clustering:
+    - Reorganized into two time-based clusters
+    - Cluster_001 now contains the storage-database incident (15:02-15:08)
+    - Cluster_002 now contains the network device incidents (15:30-15:40)
+    - Clusters 002 and 003 from initial exploration were merged
+    - 2 alerts remain unassigned (from different time periods)
+    
+    Thought 4: The time-based clustering has better organized the alerts around two distinct incidents, which likely represent different root causes. However, to fully understand the cause-effect relationships within each incident, we should examine the network topology.
+    Action 4: TopologyBasedClustering
+    
+    Observation 4: Topology-based clustering completed. Now have 2 clusters and 0 unassigned alerts.
+    
+    Key insights from topology-based clustering:
+    - Maintained the two main clusters representing separate incidents
+    - Incorporated the 2 previously unassigned alerts based on network relationships
+    - Within each cluster, identified clear causal chains following network dependencies
+    - Cluster_001 shows storage failure → database impact → application errors
+    - Cluster_002 shows core switch failure → distribution switches → access layer
+    
+    Thought 5: The topology-based clustering has refined our understanding of the causal chains within each incident. Both clusters now clearly show how issues propagated through dependent systems. Let's reassess to ensure our clustering optimally reveals the root causes.
+    Action 5: Reassess
+    
+    Observation 5: Reassessment completed. Now have 2 clusters and 0 unassigned alerts.
+    
+    Current clustering effectively reveals two distinct root causes:
+    - Cluster_001 shows a storage subsystem failure (at 15:02) as the root cause, with cascading effects to databases and applications
+    - Cluster_002 shows a core switch failure (at 15:30) as the root cause, with cascading effects to dependent network devices
+    Each cluster tells a clear story of cause and effect, with temporal sequences aligning perfectly with network dependencies. No further adjustments needed.
+    
+    Recommended next action: Finish
+    
+    Thought 6: The clusters now clearly identify two separate root causes and their cascading effects. This organization will help network engineers quickly identify and address the underlying issues: a storage subsystem failure and a core switch failure. The clustering is complete and optimized for root cause analysis.
+    Action 6: Finish
+    
+    Observation 6: Alert aggregation process completed.
+    
+    Final state: 2 clusters, 0 unassigned alerts.
+    
+    ### Example 3: Distinguishing Related Symptoms from Separate Root Causes
+    
+    Thought 1: I have a set of alerts from various network and application components. To start identifying potential root causes, I'll perform initial exploration.
+    Action 1: InitialExploration
+    
+    Observation 1: Initial exploration completed. Found 5 clusters and 4 unassigned alerts.
+    
+    Key insights from initial clustering:
+    - Multiple small clusters based primarily on device types
+    - Clusters 001-003 contain network device alerts from the same time period
+    - Clusters 004-005 contain application server alerts
+    - 4 alerts remain unassigned, including some security-related alerts
+    
+    Thought 2: The initial clustering has created several small clusters, but they may not be organized optimally for root cause identification. Some might be related symptoms rather than separate root causes. Let's reassess to determine how to better organize them.
+    Action 2: Reassess
+    
+    Observation 2: Reassessment completed. Now have 5 clusters and 4 unassigned alerts.
+    
+    Current clustering appears to be fragmenting what might be related issues. Looking at the timestamps, Clusters 001, 002, and 003 all contain alerts from an overlapping 10-minute period (09:15-09:25). Furthermore, the topology data suggests these devices are interconnected. These may be symptoms of a single root cause rather than separate incidents. Topology-based clustering would help clarify these relationships.
     
     Recommended next action: TopologyBasedClustering
     
-    Thought 3: Following the recommendation, I'll apply topology-based clustering to identify cross-region dependencies and relationships.
+    Thought 3: The assessment suggests that some clusters might represent related symptoms rather than separate root causes. Topology-based clustering will help identify network dependencies and better organize alerts based on cause-effect relationships.
     Action 3: TopologyBasedClustering
     
-    Observation 3: Topology-based clustering completed. Now have 5 clusters and 6 unassigned alerts.
+    Observation 3: Topology-based clustering completed. Now have 3 clusters and 2 unassigned alerts.
     
     Key insights from topology-based clustering:
-    - Created 2 new clusters with cross-region alerts based on network infrastructure dependencies
-    - Cluster_004 contains alerts from global WAN connectivity issues
-    - Cluster_005 contains alerts from cloud infrastructure spanning all regions
-    - 6 alerts remain unassigned, with mixed temporal patterns
+    - Merged Clusters 001, 002, and 003 into a single cluster (now Cluster_001) based on network dependencies
+    - Identified a clear propagation path from core router (original Cluster_001) to distribution switches (original Cluster_002) to access switches (original Cluster_003)
+    - Cluster_002 (formerly 004) and Cluster_003 (formerly 005) remain separate as they represent application issues with no clear network connection to the first incident
+    - 2 security alerts remain unassigned
     
-    Thought 4: Topology-based clustering has made good progress on cross-region relationships, but we still have unassigned alerts. Let's apply time-based clustering to see if we can identify temporal patterns among the remaining alerts.
-    Action 4: TimeBasedClustering
+    Thought 4: The topology-based clustering has significantly improved our understanding of the network issue by showing how it propagated through the infrastructure. We now have a clearer picture of potential root causes. Let's reassess to determine if further refinement is needed.
+    Action 4: Reassess
     
-    Observation 4: Time-based clustering completed. Now have 6 clusters and 3 unassigned alerts.
+    Observation 4: Reassessment completed. Now have 3 clusters and 2 unassigned alerts.
+    
+    Current clustering is improved but could be further refined for root cause identification:
+    - Cluster_001 now clearly shows a network issue cascading from core to edge
+    - Clusters 002 and 003 contain application alerts, but examining their timestamps reveals they occurred 5-15 minutes after the network issues in Cluster_001
+    - The topology doesn't show direct connections, but the temporal sequence suggests these application issues might be downstream effects from the network problem
+    
+    Recommended next action: TimeBasedClustering
+    
+    Thought 5: The assessment suggests that the application issues might be downstream effects of the network problem, based on the timing. Time-based clustering will help clarify these temporal relationships and potentially identify cause-effect patterns across different systems.
+    Action 5: TimeBasedClustering
+    
+    Observation 5: Time-based clustering completed. Now have 2 clusters and 2 unassigned alerts.
     
     Key insights from time-based clustering:
-    - Created 1 new cluster (Cluster_006) with temporally related authentication service alerts
-    - 3 alerts remain unassigned with no clear temporal or topological relationships
+    - Merged Cluster_002 into Cluster_001 based on temporal sequence
+    - Identified that application alerts in former Cluster_002 occurred 5-10 minutes after the core network alerts
+    - Kept Cluster_003 (now Cluster_002) separate as its timing doesn't align with the main incident
+    - 2 security alerts remain unassigned, with timestamps outside both incident windows
     
-    Thought 5: We've made significant progress, but still have 3 unassigned alerts. Let's reassess to determine the best approach for these remaining alerts.
-    Action 5: Reassess
+    Thought 6: The time-based clustering has further improved our understanding by revealing that some application issues were likely caused by the network problem, despite no direct network connections in the topology data. Let's reassess to determine our next step.
+    Action 6: Reassess
     
-    Observation 5: Reassessment completed. Now have 6 clusters and 3 unassigned alerts.
+    Observation 6: Reassessment completed. Now have 2 clusters and 2 unassigned alerts.
     
-    The current clustering is strong. Among the unassigned alerts, two (7001, 7002) appear to be related to the global authentication service but were missed in the time-based clustering due to timezone adjustments. They should be added to Cluster_006. The remaining alert (8001) appears to be an isolated incident unrelated to other clusters.
+    Current clustering effectively reveals root causes and their effects:
+    - Cluster_001 now shows a complete picture of a network failure and its impacts, including some application effects
+    - Cluster_002 represents a separate application issue unrelated to the network problem
+    - The 2 unassigned security alerts have similar timestamps (10:45-10:50) and appear related to each other, but are completely separate from both main incidents
     
-    Recommended next action: Reorganize[Move alerts 7001, 7002 from unassigned to cluster_006.]
+    Recommended next action: Reorganize[Create a new cluster with alerts 8001 and 8002.]
     
-    Thought 6: I'll follow the recommendation to move the authentication-related alerts to Cluster_006.
-    Action 6: Reorganize[Move alerts 7001, 7002 from unassigned to cluster_006.]
-    
-    Observation 6: Reorganization completed.
-    
-    Operations performed:
-    - Moved 2 alerts from unassigned to cluster_006
-    
-    Current state: 6 clusters, 1 unassigned alert.
-    
-    Thought 7: Now I'll create a new cluster for the remaining isolated alert.
-    Action 7: Reorganize[Create a new cluster with alert 8001.]
+    Thought 7: Based on the assessment, I'll create a new cluster for the security alerts since they represent a separate issue with a distinct timeframe.
+    Action 7: Reorganize[Create a new cluster with alerts 8001 and 8002.]
     
     Observation 7: Reorganization completed.
     
     Operations performed:
-    - Created new cluster cluster_007 with 1 alert
+    - Created new cluster cluster_003 with 2 alerts
     
-    Current state: 7 clusters, 0 unassigned alerts.
+    Current state: 3 clusters, 0 unassigned alerts.
     
-    Thought 8: All alerts are now assigned to clusters. Let's perform a final assessment to ensure the clustering is optimal.
+    Thought 8: Now we have three well-formed clusters, each representing a distinct root cause: Cluster_001 capturing a network failure and its cascading effects including application impacts, Cluster_002 containing a separate application issue, and Cluster_003 representing security-related issues. Let's do a final assessment.
     Action 8: Reassess
     
-    Observation 8: Reassessment completed. Now have 7 clusters and 0 unassigned alerts.
+    Observation 8: Reassessment completed. Now have 3 clusters, 0 unassigned alerts.
     
-    Current clustering is excellent, capturing both regional patterns and cross-region dependencies:
-    - Clusters 001, 002, 003: Region-specific infrastructure issues
-    - Cluster_004: Global WAN connectivity problems
-    - Cluster_005: Multi-region cloud infrastructure issues
-    - Cluster_006: Global authentication service disruption
-    - Cluster_007: Isolated monitoring incident
+    Current clustering is excellent for root cause identification:
+    - Cluster_001 clearly shows a network failure originating at the core (root cause at 09:15) and propagating to both network and application components (symptoms from 09:18-09:30)
+    - Cluster_002 represents a separate application issue with a different root cause
+    - Cluster_003 contains security alerts representing a third distinct incident
+    - The temporal and topological relationships within each cluster confirm the cause-effect patterns
     No further adjustments needed.
     
     Recommended next action: Finish
     
-    Thought 9: The clustering is complete and provides comprehensive insights into both regional and global issues. The clusters account for time zone differences and complex cross-region dependencies, which should greatly aid in root cause analysis.
+    Thought 9: The clustering is complete and optimized for root cause identification. Each cluster represents a distinct incident with a clear root cause and associated symptoms. This organization will allow network engineers to quickly identify and address three separate underlying problems.
     Action 9: Finish
     
     Observation 9: Alert aggregation process completed.
     
-    Final state: 7 clusters, 0 unassigned alerts.
+    Final state: 3 clusters, 0 unassigned alerts.
+    
+    ### Example 4: Identifying Subtle Causal Relationships
+    
+    Thought 1: I have a set of alerts from a diverse environment with different systems and locations. To begin identifying potential root causes, I'll start with initial exploration.
+    Action 1: InitialExploration
+    
+    Observation 1: Initial exploration completed. Found 2 clusters and 12 unassigned alerts.
+    
+    Key insights from initial clustering:
+    - Cluster_001 contains database server alerts from location A
+    - Cluster_002 contains web server alerts from location B
+    - 12 alerts remain unassigned, from various systems and locations
+    
+    Thought 2: The initial exploration created some basic clusters, but many alerts remain unassigned. To better understand the causal relationships, I should reassess the current state.
+    Action 2: Reassess
+    
+    Observation 2: Reassessment completed. Now have A clusters and 12 unassigned alerts.
+    
+    Current clustering doesn't capture the full picture of root causes. Looking at timestamps across all alerts, there appears to be a sequence starting with network alerts at 07:02-07:05 (currently unassigned), followed by database alerts at 07:08-07:15 (Cluster_001), and finally web server alerts at 07:20-07:30 (Cluster_002 plus some unassigned). Despite being in different locations, the timing suggests a potential causality chain that should be investigated with topology information.
+    
+    Recommended next action: TopologyBasedClustering
+    
+    Thought 3: The assessment suggests a potential causal chain across different systems and locations. Topology-based clustering will help identify if there are network dependencies that explain this temporal sequence.
+    Action 3: TopologyBasedClustering
+    
+    Observation 3: Topology-based clustering completed. Now have 3 clusters and 5 unassigned alerts.
+    
+    Key insights from topology-based clustering:
+    - Created a new Cluster_003 containing the early network alerts
+    - Maintained Clusters 001 and 002 as separate
+    - Identified that some network components in location A (Cluster_003) are connected to the database servers (Cluster_001)
+    - Found no direct connections between locations A and B
+    - Assigned some previously unassigned alerts based on device relationships
+    - 5 alerts remain unassigned with no clear topology relationships
+    
+    Thought 4: The topology-based clustering has identified some network relationships but hasn't fully explained the temporal sequence across locations. Let's examine the time patterns in more detail.
+    Action 4: TimeBasedClustering
+    
+    Observation 4: Time-based clustering completed. Now have 2 clusters and 3 unassigned alerts.
+    
+    Key insights from time-based clustering:
+    - Merged Clusters 001 and 003 based on clear temporal sequence and topology connections
+    - Cluster_001 now shows the full progression: network issues → database impact
+    - Kept Cluster_002 (web servers) separate as the topology doesn't show a direct connection
+    - Incorporated 2 previously unassigned alerts from location A into Cluster_001
+    - 3 alerts remain unassigned, all from a third location C
+    
+    Thought 5: The time-based clustering has improved our understanding of the cause-effect relationship within location A, showing how network issues led to database problems. However, the potential relationship with location B's web servers hasn't been explained by either time or topology alone. Let's reassess.
+    Action 5: Reassess
+    
+    Observation 5: Reassessment completed. Now have 2 clusters and 3 unassigned alerts.
+    
+    Current clustering has identified one clear root cause in location A (network issue leading to database problems). After closer examination of alert details, we can see the web server alerts in location B (Cluster_002) are reporting database connectivity errors to the same databases in location A. While there's no direct network link in the topology, there's a functional dependency: the web servers depend on the databases. This explains the temporal sequence: network issues → database problems → web server errors.
+    
+    Recommended next action: Reorganize[Merge clusters 001 and 002.]
+    
+    Thought 6: Based on the assessment, I'll merge Clusters 001 and 002 since the web server issues are downstream effects of the database problems, which were themselves caused by network issues. Despite no direct network connection, the functional dependency and clear temporal sequence indicate a single causal chain.
+    Action 6: Reorganize[Merge clusters 001 and 002.]
+    
+    Observation 6: Reorganization completed.
+    
+    Operations performed:
+    - Merged clusters cluster_001 and cluster_002
+    
+    Current state: 1 cluster, 3 unassigned alerts.
+    
+    Thought 7: Now we have a single cluster representing the complete cause-effect chain across locations, from the original network issue to the database problems to the web server errors. The 3 unassigned alerts from location C still need to be addressed. Let's reassess.
+    Action 7: Reassess
+    
+    Observation 7: Reassessment completed. Now have 1 cluster and 3 unassigned alerts.
+    
+    Current clustering effectively captures the main incident spanning locations A and B, showing the complete causal chain from the network root cause through to the application impacts. The 3 unassigned alerts from location C occurred at a completely different time (14:30-14:45) and show no relationship to the main incident. They appear to be a separate issue involving a storage system in location C.
+    
+    Recommended next action: Reorganize[Create a new cluster with alerts 9001, 9002, and 9003.]
+    
+    Thought 8: I'll create a new cluster for the location C alerts since they represent a completely separate issue with no causal connection to the main incident.
+    Action 8: Reorganize[Create a new cluster with alerts 9001, 9002, and 9003.]
+    
+    Observation 8: Reorganization completed.
+    
+    Operations performed:
+    - Created new cluster cluster_002 with 3 alerts
+    
+    Current state: 2 clusters, 0 unassigned alerts.
+    
+    Thought 9: We now have two well-formed clusters, each representing a distinct root cause: Cluster_001 capturing the cross-location incident from network to database to web applications, and Cluster_002 containing the separate storage issue in location C. Let's do a final assessment.
+    Action 9: Reassess
+    
+    Observation 9: Reassessment completed. Now have 2 clusters, 0 unassigned alerts.
+    
+    Current clustering is excellent for root cause identification:
+    - Cluster_001 reveals a complex but single root cause (network failure in location A) with cascading effects across systems and locations
+    - Cluster_002 represents a completely separate storage issue in location C
+    - The subtle dependency between web servers and databases was correctly identified despite no direct network connection in the topology
+    No further adjustments needed.
+    
+    Recommended next action: Finish
+    
+    Thought 10: The clustering is complete and optimized for root cause identification. We've identified a complex causal chain spanning multiple locations and systems, revealing how a network issue propagated through functional dependencies to impact web services. The second cluster correctly isolates an unrelated issue. This organization will help engineers quickly understand and address the underlying problems.
+    Action 10: Finish
+    
+    Observation 10: Alert aggregation process completed.
+    
+    Final state: 2 clusters, 0 unassigned alerts.
+    
+    ### Example 5: Handling Concurrent but Independent Root Causes
+    
+    Thought 1: I have alerts from a large enterprise network with multiple data centers. To start identifying root causes, I'll perform initial exploration.
+    Action 1: InitialExploration
+    
+    Observation 1: Initial exploration completed. Found 4 clusters and 10 unassigned alerts.
+    
+    Key insights from initial clustering:
+    - Cluster_001 contains router alerts from data center A
+    - Cluster_002 contains switch alerts from data center A
+    - Cluster_003 contains database alerts from data center B
+    - Cluster_004 contains application server alerts from data center B
+    - 10 alerts remain unassigned, from various systems across both data centers
+    
+    Thought 2: The initial exploration has created several clusters based on device types and locations, but they may not be optimally organized around root causes. Let's reassess to determine how to better identify cause-effect relationships.
+    Action 2: Reassess
+    
+    Observation 2: Reassessment completed. Now have 4 clusters and 10 unassigned alerts.
+    
+    Current clustering needs refinement to better reveal root causes. Looking at timestamps and locations:
+    - Clusters 001 and 002 in data center A: Router alerts (06:02-06:05) preceded switch alerts (06:07-06:12)
+    - Clusters 003 and 004 in data center B: Database alerts (08:45-08:50) preceded application alerts (08:52-09:00)
+    - The unassigned alerts include some from both time periods and locations
+    This suggests two separate incidents with their own causal chains. Topology-based clustering would help confirm these relationships.
+    
+    Recommended next action: TopologyBasedClustering
+    
+    Thought 3: The assessment indicates two separate incidents in different data centers with their own temporal sequences. Topology-based clustering will help clarify the network dependencies within each data center and better organize alerts around their respective root causes.
+    Action 3: TopologyBasedClustering
+    
+    Observation 3: Topology-based clustering completed. Now have 2 clusters and 3 unassigned alerts.
+    
+    Key insights from topology-based clustering:
+    - Merged Clusters 001 and 002 into a single cluster (now Cluster_001) based on network dependencies in data center A
+    - Merged Clusters 003 and 004 into a single cluster (now Cluster_002) based on dependencies in data center B
+    - Added most unassigned alerts to their respective clusters based on location and network relationships
+    - Identified clear propagation paths within each data center
+    - 3 alerts remain unassigned from a third location (data center C)
+    
+    Thought 4: The topology-based clustering has significantly improved our understanding by creating two distinct clusters, each representing a separate incident with its own root cause and propagation path. Let's reassess to determine our next steps.
+    Action 4: Reassess
+    
+    Observation 4: Reassessment completed. Now have 2 clusters and 3 unassigned alerts.
+    
+    Current clustering effectively captures two distinct root causes:
+    - Cluster_001 shows a clear causal chain in data center A: router failure → switch issues → endpoint impacts
+    - Cluster_002 shows a clear causal chain in data center B: database failure → application errors → user-facing impacts
+    - The 3 unassigned alerts are from data center C (11:30-11:35) and appear to be a third separate incident involving a storage system failure
+    
+    Recommended next action: Reorganize[Create a new cluster with alerts 7001, 7002, and 7003.]
+    
+    Thought 5: Based on the assessment, I'll create a new cluster for the data center C alerts since they represent a third, unrelated incident with its own root cause.
+    Action 5: Reorganize[Create a new cluster with alerts 7001, 7002, and 7003.]
+    
+    Observation 5: Reorganization completed.
+    
+    Operations performed:
+    - Created new cluster cluster_003 with 3 alerts
+    
+    Current state: 3 clusters, 0 unassigned alerts.
+    
+    Thought 6: We now have three well-formed clusters, each representing a distinct root cause in a different data center. Let's perform a final assessment to ensure our clustering optimally reveals these root causes.
+    Action 6: Reassess
+    
+    Observation 6: Reassessment completed. Now have 3 clusters, 0 unassigned alerts.
+    
+    Current clustering is excellent for root cause identification:
+    - Cluster_001 clearly identifies a router failure in data center A as the root cause of a cascading network issue
+    - Cluster_002 clearly identifies a database failure in data center B as the root cause of application problems
+    - Cluster_003 identifies a storage system failure in data center C
+    - Each cluster represents a completely independent incident with its own root cause and effects
+    - The temporal sequences within each cluster confirm the cause-effect relationships
+    No further adjustments needed.
+    
+    Recommended next action: Finish
+    
+    Thought 7: The clustering is complete and optimized for root cause identification. We've identified three separate incidents, each with its own clear root cause and progression of effects. This organization will allow network engineers to efficiently investigate and resolve each underlying issue independently.
+    Action 7: Finish
+    
+    Observation 7: Alert aggregation process completed.
+    
+    Final state: 3 clusters, 0 unassigned alerts.
     """
