@@ -1591,3 +1591,182 @@ def reorganize(self, instructions, verbose=False):
             import traceback
             traceback.print_exc()
         return [error_message]
+    
+
+def _move_between_clusters(self, alert_ids, src_cluster_id, dst_cluster_id):
+    """Move alerts from one cluster to another."""
+    # Find source and destination clusters
+    src_cluster = None
+    dst_cluster = None
+    
+    for cluster in self.current_clusters["clusters"]:
+        if cluster["cluster_id"] == src_cluster_id:
+            src_cluster = cluster
+        if cluster["cluster_id"] == dst_cluster_id:
+            dst_cluster = cluster
+    
+    if not src_cluster:
+        raise ValueError(f"Source cluster {src_cluster_id} not found")
+    if not dst_cluster:
+        raise ValueError(f"Destination cluster {dst_cluster_id} not found")
+    
+    # Ensure alert_ids in the source cluster is a list
+    if "alert_ids" not in src_cluster:
+        src_cluster["alert_ids"] = []
+    
+    # Convert string representation of a list to an actual list if needed
+    src_cluster["alert_ids"] = self._ensure_list_format(src_cluster["alert_ids"])
+    
+    # Ensure alert_ids in the destination cluster is a list
+    if "alert_ids" not in dst_cluster:
+        dst_cluster["alert_ids"] = []
+    
+    # Convert string representation of a list to an actual list if needed
+    dst_cluster["alert_ids"] = self._ensure_list_format(dst_cluster["alert_ids"])
+    
+    # Move alerts
+    for alert_id in alert_ids:
+        if alert_id in src_cluster["alert_ids"]:
+            # Remove from source cluster
+            src_cluster["alert_ids"].remove(alert_id)
+            # Add to destination cluster
+            dst_cluster["alert_ids"].append(alert_id)
+
+
+def _merge_clusters(self, cluster_ids):
+    """Merge multiple clusters into one."""
+    if len(cluster_ids) < 2:
+        return
+    
+    # Find the clusters to merge
+    clusters_to_merge = []
+    for cluster_id in cluster_ids:
+        for cluster in self.current_clusters["clusters"]:
+            if cluster["cluster_id"] == cluster_id:
+                clusters_to_merge.append(cluster)
+                break
+    
+    if len(clusters_to_merge) < 2:
+        return
+    
+    # Use the first cluster as the base
+    base_cluster = clusters_to_merge[0]
+    
+    # Merge other clusters into the base cluster
+    for cluster in clusters_to_merge[1:]:
+        # Merge alert_ids using our helper function
+        base_cluster["alert_ids"] = self._ensure_list_format(base_cluster.get("alert_ids", []))
+        cluster_alert_ids = self._ensure_list_format(cluster.get("alert_ids", []))
+        
+        base_cluster["alert_ids"].extend(cluster_alert_ids)
+        
+        # Merge source_ids - handle both string and list formats
+        if "source_ids" in base_cluster:
+            if isinstance(base_cluster["source_ids"], str):
+                if base_cluster["source_ids"].startswith("[") and base_cluster["source_ids"].endswith("]"):
+                    try:
+                        base_source_ids = json.loads(base_cluster["source_ids"])
+                    except:
+                        base_source_ids = [s.strip() for s in base_cluster["source_ids"].strip("[]").split(",")]
+                else:
+                    base_source_ids = [s.strip() for s in base_cluster["source_ids"].split(",")]
+            else:
+                base_source_ids = list(base_cluster["source_ids"])
+        else:
+            base_source_ids = []
+            
+        if "source_ids" in cluster:
+            if isinstance(cluster["source_ids"], str):
+                if cluster["source_ids"].startswith("[") and cluster["source_ids"].endswith("]"):
+                    try:
+                        cluster_source_ids = json.loads(cluster["source_ids"])
+                    except:
+                        cluster_source_ids = [s.strip() for s in cluster["source_ids"].strip("[]").split(",")]
+                else:
+                    cluster_source_ids = [s.strip() for s in cluster["source_ids"].split(",")]
+            else:
+                cluster_source_ids = list(cluster["source_ids"])
+        else:
+            cluster_source_ids = []
+        
+        base_source_ids.extend(cluster_source_ids)
+        
+        # Remove duplicates and format as string or list based on original format
+        unique_sources = list(set(source for source in base_source_ids if source))
+        if isinstance(base_cluster.get("source_ids", ""), str):
+            base_cluster["source_ids"] = ", ".join(unique_sources)
+        else:
+            base_cluster["source_ids"] = unique_sources
+        
+        # Update time range
+        if "time" in base_cluster and "time" in cluster:
+            base_cluster["time"]["start"] = min(base_cluster["time"]["start"], cluster["time"]["start"])
+            base_cluster["time"]["end"] = max(base_cluster["time"]["end"], cluster["time"]["end"])
+        
+        # Update severity if needed - handle both string and number formats
+        if "severity" in cluster and "severity" in base_cluster:
+            base_severity = base_cluster["severity"]
+            cluster_severity = cluster["severity"]
+            
+            # Convert to numbers for comparison if they're strings
+            if isinstance(base_severity, str) and base_severity.isdigit():
+                base_severity = int(base_severity)
+            if isinstance(cluster_severity, str) and cluster_severity.isdigit():
+                cluster_severity = int(cluster_severity)
+                
+            if cluster_severity > base_severity:
+                base_cluster["severity"] = cluster["severity"]  # Keep original format
+        
+        # Update description
+        if "Description" in base_cluster and "Description" in cluster:
+            base_cluster["Description"] += f" Combined with: {cluster['Description']}"
+        
+        # Update confidence - handle both string and number formats
+        if "confidence" in base_cluster and "confidence" in cluster:
+            base_confidence = base_cluster["confidence"]
+            cluster_confidence = cluster["confidence"]
+            
+            # Convert to numbers for calculation if they're strings
+            if isinstance(base_confidence, str):
+                base_confidence = float(base_confidence)
+            if isinstance(cluster_confidence, str):
+                cluster_confidence = float(cluster_confidence)
+                
+            avg_confidence = (base_confidence + cluster_confidence) / 2
+            
+            # Keep original format (string or number)
+            if isinstance(base_cluster["confidence"], str):
+                base_cluster["confidence"] = str(avg_confidence)
+            else:
+                base_cluster["confidence"] = avg_confidence
+        
+        # Remove the merged cluster
+        self.current_clusters["clusters"].remove(cluster)
+
+def _create_new_cluster(self, alert_ids, cluster_data):
+    """Create a new cluster with the specified alerts."""
+    # Ensure alert_ids is a list
+    alert_ids = self._ensure_list_format(alert_ids)
+    
+    # Create a new cluster with the provided data
+    new_cluster = {
+        "cluster_id": cluster_data.get("cluster_id", f"cluster_{len(self.current_clusters['clusters']) + 1}"),
+        "chains of thoughts": cluster_data.get("chains_of_thoughts", "Manually created cluster"),
+        "source_ids": cluster_data.get("source_ids", ""),
+        "alert_ids": alert_ids,
+        "severity": cluster_data.get("severity", "medium"),
+        "time": cluster_data.get("time", {"start": 0, "end": 0}),
+        "confidence": cluster_data.get("confidence", 0.5),
+        "Description": cluster_data.get("Description", "Manually created cluster")
+    }
+    
+    # Add the new cluster
+    self.current_clusters["clusters"].append(new_cluster)
+    
+    # Ensure unassigned_alerts is a list
+    self.current_clusters["unassigned_alerts"] = self._ensure_list_format(self.current_clusters["unassigned_alerts"])
+    
+    # Remove alerts from unassigned if they're there
+    for alert_id in alert_ids:
+        if alert_id in self.current_clusters["unassigned_alerts"]:
+            self.current_clusters["unassigned_alerts"].remove(alert_id)
