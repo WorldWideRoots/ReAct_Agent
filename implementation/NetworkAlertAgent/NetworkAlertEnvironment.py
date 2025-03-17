@@ -351,7 +351,15 @@ class NetworkAlertEnvironment(gym.Env):
                 if action in line:
                     # For Reorganize actions, try to extract natural language instructions
                     if action == "Reorganize":
-                        # Look for instructions after the action keyword
+                        # Special case: look for multiple operations in square brackets format
+                        reorganize_pattern = r'Reorganize\s*\[\s*([\s\S]*?)\s*\]'
+                        reorganize_match = re.search(reorganize_pattern, response_content)
+                        
+                        if reorganize_match:
+                            operations_text = reorganize_match.group(1).strip()
+                            return f"Reorganize[{operations_text}]"
+                        
+                        # Look for instructions after the action keyword (original behavior)
                         try:
                             instruction_start = line.find(action) + len(action)
                             instruction = line[instruction_start:].strip()
@@ -377,6 +385,9 @@ class NetworkAlertEnvironment(gym.Env):
                 if marker in line:
                     # Return this line as the recommendation
                     return line
+        
+        # Default fallback if no clear recommendation is found
+        return "No clear action recommendation found. Consider performing Reassess[] again with more detail."
         
         # Default fallback if no clear recommendation is found
         return "No clear action recommendation found. Consider performing Reassess[] again with more detail."
@@ -991,252 +1002,245 @@ class NetworkAlertEnvironment(gym.Env):
         return reply
     
     def assess_llm(self, temperature=0.01):
-    """
-    Root cause-focused assessment function that evaluates clusters primarily through
-    temporal and topological relationships, ensuring all recommendations aim to 
-    identify the underlying root causes of network events.
-    
-    Returns:
-        tuple: (response from LLM, updated history)
-    """
-    # Get the function-specific history
-    history = self.function_histories.get("assess", [])
-    
-    # Validate current_clusters
-    if not isinstance(self.current_clusters, dict):
-        raise TypeError("current_clusters must be a dictionary")
+
+        # Get the function-specific history
+        history = self.function_histories.get("assess", [])
         
-    # Check for required keys
-    if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
-        raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
-        
-    # Prepare data for the LLM
-    try:
-        # Serialize clusters and unassigned alerts
-        clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
-        unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
-        current_alerts_batch_str = json.dumps(self.current_alerts_batch)
-        topology_info_str = json.dumps(self.topology_info, separators=(',', ': '), indent=1)
-        
-        # Get summarized stats to help with analysis
-        num_clusters = len(self.current_clusters['clusters'])
-        num_unassigned = len(self.current_clusters['unassigned_alerts'])
-        total_alerts = sum(len(cluster.get('alert_ids', [])) for cluster in self.current_clusters['clusters']) + num_unassigned
-        
-        # Calculate average confidence if available
-        total_confidence = sum(float(cluster.get('confidence', 0)) for cluster in self.current_clusters['clusters'] if 'confidence' in cluster)
-        avg_confidence = total_confidence / num_clusters if num_clusters > 0 else 0
-        
-        # Verify serialization
-        if not all(isinstance(x, str) for x in [clusters_data, unassigned_alerts_data, current_alerts_batch_str, topology_info_str]):
-            raise TypeError('The serialized data is not a string')
-    except Exception as e:
-        print(f'Error while serializing data: {e}')
-        return None, history
-        
-    # Get previous clustering summaries for context
-    clustering_context = self._get_clustering_summaries()
-    
-    # Create system instructions with enhanced guidance and few-shot examples
-    system_instructions = f"""
-    You are an advanced network alert assessment system with the primary goal of identifying ROOT CAUSES of network events.
-    Your task is to evaluate the current state of alert clusters and provide recommendations that help identify the underlying
-    causes of network issues.
-    
-    # Current Clustering Stats:
-    - Total Alerts: {total_alerts}
-    - Number of Clusters: {num_clusters}
-    - Unassigned Alerts: {num_unassigned}
-    - Average Confidence: {avg_confidence:.2f}
-    
-    # Previous Steps:
-    {clustering_context}
-    
-    # CORE PRINCIPLES - ALWAYS PRIORITIZE:
-    
-    1. TEMPORAL RELATIONSHIPS:
-       - Alerts occurring within 15 minutes of each other may be related
-       - Sequential alerts often indicate cascading failures from a root cause
-       - The timing pattern is critical - think about "what happened first?"
-       - Time is a fundamental indicator of causal relationships
-    
-    2. TOPOLOGICAL RELATIONSHIPS:
-       - Alerts from the same device or connected devices are often related
-       - Network dependencies create causal chains (e.g., router failure → switch alerts)
-       - Physical or logical network proximity strongly suggests causality
-       - Topology often reveals the direction of impact from root cause to symptoms
-    
-    # Assessment Guidelines:
-    
-    When examining clusters and unassigned alerts, focus on:
-    
-    1. Temporal Causality:
-       - Which alerts occurred first? These are potential root causes
-       - Is there a clear sequence of alerts that suggests a propagating issue?
-       - Do time patterns suggest a common external trigger?
-    
-    2. Topological Causality:
-       - Are there dependent components in the network architecture?
-       - Do device relationships explain the alert pattern?
-       - Can you trace the path of failure through the network?
-    
-    3. Root Cause Identification:
-       - Which alerts represent the CAUSE vs. which represent SYMPTOMS?
-       - Are clusters centered around potential root cause alerts?
-       - Do unassigned alerts fit into existing cause-effect patterns?
-    
-    # IMPORTANT: Alert Descriptions are SECONDARY Evidence
-    
-    - Do NOT group alerts solely based on similar descriptions or types
-    - Descriptions provide context but aren't sufficient for root cause identification
-    - Only consider descriptions AFTER establishing temporal and topological relationships
-    - Similar alert messages without temporal/topological links often represent separate issues
-    
-    # Recommendation Guidelines:
-    
-    After your assessment, provide ONE clear recommendation for the NEXT ACTION that will best reveal root causes:
-    
-    1. TimeBasedClustering: Recommend when:
-       - Alert timestamps show patterns not yet captured in existing clusters
-       - Temporal sequences across different devices need further analysis
-       - There are potential cascading failures visible in the timeline
-    
-    2. TopologyBasedClustering: Recommend when:
-       - Network dependencies aren't fully reflected in current clusters
-       - Device relationships could reveal propagation paths
-       - Different network segments show potentially related issues
-    
-    3. Reorganize: Only recommend specific changes when:
-       - Clear temporal AND/OR topological relationships exist but weren't captured
-       - The change will better highlight probable root causes
-       - The evidence for the relationship is strong (not just similar descriptions)
-    
-    4. Finish: Recommend only when:
-       - Clusters clearly represent distinct root cause events
-       - Temporal and topological relationships are properly captured
-       - Further changes would not improve root cause identification
-    
-    # Reorganize Recommendation Format:
-    
-    When recommending Reorganize, use SIMPLE, CLEAR language and ALWAYS explain the temporal or topological reason:
-    - "Move alerts 1001, 1002 from unassigned to cluster_003, as they occurred 5 minutes after the router failure in cluster_003 and are from directly connected switches."
-    - "Create a new cluster with alerts 2001, 2002, 2003, which show a distinct authentication failure cascade starting at the primary authentication server and progressing to dependent services within 3 minutes."
-    - "Merge clusters 001 and 004, as cluster_001 contains router failures and cluster_004 contains alerts from downstream devices that occurred 2-5 minutes later."
-    
-    Keep reorganization instructions SIMPLE and FOCUSED on one operation that will best reveal causality.
-    
-    # Example Assessments and Recommendations:
-    
-    ## Example 1: Temporal Causality Driving Reorganization
-    
-    Assessment:
-    The current clustering shows 3 well-formed clusters. There are 2 unassigned alerts (1001, 1002) from switch devices that occurred exactly 3 minutes after the router failure alerts in Cluster_001. The timing strongly suggests these are downstream effects from the same root cause, and the topology information confirms these switches are directly connected to the affected router.
-    
-    Recommendation:
-    Reorganize[Move alerts 1001, 1002 from unassigned to cluster_001.] These alerts show a clear temporal sequence following the router failure in cluster_001, and the topology confirms they are connected devices experiencing downstream effects from the same root cause.
-    
-    ## Example 2: Creating New Cluster Based on Distinct Root Cause
-    
-    Assessment:
-    There are 4 clusters that appear appropriate. Among the 5 unassigned alerts, 3 of them (2001, 2002, 2003) form a clear temporal sequence starting with a database server failure (2001) followed by application errors on connected systems (2002, 2003) within 2 minutes. This pattern indicates a distinct root cause (database failure) separate from existing clusters, with its own cascade of effects.
-    
-    Recommendation:
-    Reorganize[Create a new cluster with alerts 2001, 2002, 2003.] These alerts show a clear temporal sequence starting with a database failure followed by dependent application errors, indicating a distinct root cause event separate from existing clusters.
-    
-    ## Example 3: Merging Clusters Based on Causal Chain
-    
-    Assessment:
-    Clusters 002 and 004 appear to be part of the same causal chain. Cluster_002 contains router failures at 14:05:23, while Cluster_004 contains alerts from switches and endpoints that are directly connected to these routers, occurring between 14:07:15 and 14:10:42. The topology confirms these devices are in the same network segment, and the timing strongly suggests the alerts in Cluster_004 are downstream effects from the root cause captured in Cluster_002.
-    
-    Recommendation:
-    Reorganize[Merge clusters 002 and 004.] Cluster_002 contains the root cause (router failures) while Cluster_004 contains the downstream effects on connected devices that occurred 2-5 minutes later, making them part of the same causal chain.
-    
-    ## Example 4: Recommending Time-Based Analysis
-    
-    Assessment:
-    The current clustering is primarily based on device types rather than causal relationships. Several clusters contain alerts from similar devices but don't reflect clear cause-effect patterns. The timestamps reveal potential sequences that aren't captured in the current structure. For example, alerts across Clusters 001, 003, and some unassigned alerts show a potential cascade pattern when arranged chronologically, suggesting a spreading issue that might have a single root cause.
-    
-    Recommendation:
-    TimeBasedClustering. The current clustering doesn't capture the temporal sequences that are visible across different clusters. Time-based analysis would help identify potential cascading patterns and better reveal the progression of failures from root causes to symptoms.
-    
-    ## Example 5: Recommending Topology-Based Analysis
-    
-    Assessment:
-    The current clusters are grouped well by time, but network dependencies aren't reflected. For instance, Cluster_001 and Cluster_003 involve devices that are directly connected according to the topology data, with Cluster_001 alerts preceding Cluster_003 alerts by approximately 4 minutes. This suggests a potential propagation of issues through the network that should be examined through the lens of network topology.
-    
-    Recommendation:
-    TopologyBasedClustering. The current time-based clusters don't reflect the network dependencies that could explain how issues propagated. Topology-based clustering would help identify whether alerts in separate clusters are actually part of the same causal chain due to network connections.
-    
-    Be decisive and provide a single clear recommendation focused on revealing root causes through temporal and topological relationships.
-    """
-    
-    # Create user message
-    user_message = f"""
-    Please assess the current state of alert clusters with a focus on identifying root causes through temporal and topological relationships.
-    
-    CURRENT ALERT BATCH:
-    {current_alerts_batch_str}
-    
-    CURRENT CLUSTERS:
-    {clusters_data}
-    
-    UNASSIGNED ALERTS:
-    {unassigned_alerts_data}
-    
-    TOPOLOGY INFORMATION:
-    {topology_info_str}
-    
-    Please provide:
-    1. A detailed assessment focusing on temporal sequences and network dependencies
-    2. Analysis of whether current clusters reflect probable root causes and their effects
-    3. A specific recommendation for the next action that will best reveal true root causes
-    """
-    
-    # Prepare messages for LLM
-    messages = [
-        {"role": "system", "content": system_instructions},
-        {"role": "user", "content": user_message}
-    ]
-    
-    # Validate messages
-    for msg in messages:
-        if not isinstance(msg["content"], str):
-            raise ValueError(f"Message content is not a string: {msg['content']}")
+        # Validate current_clusters
+        if not isinstance(self.current_clusters, dict):
+            raise TypeError("current_clusters must be a dictionary")
             
-    # Add messages to function-specific history
-    history += messages
-    self.function_histories["assess"] = history
-    
-    # Call the LLM
-    reply = self._llm(history, temperature=temperature, model=self.llm_model)
-    
-    # Validate response
-    if 'choices' in reply and len(reply['choices']) > 0:
-        response_content = reply['choices'][0]['message']['content']
-        history.append({"role": "assistant", "content": response_content})
+        # Check for required keys
+        if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
+            raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
+            
+        # Prepare data for the LLM
+        try:
+            # Serialize clusters and unassigned alerts
+            clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
+            unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
+            current_alerts_batch_str = json.dumps(self.current_alerts_batch)
+            topology_info_str = json.dumps(self.topology_info, separators=(',', ': '), indent=1)
+            
+            # Get summarized stats to help with analysis
+            num_clusters = len(self.current_clusters['clusters'])
+            num_unassigned = len(self.current_clusters['unassigned_alerts'])
+            total_alerts = sum(len(cluster.get('alert_ids', [])) for cluster in self.current_clusters['clusters']) + num_unassigned
+            
+            # Calculate average confidence if available
+            total_confidence = sum(float(cluster.get('confidence', 0)) for cluster in self.current_clusters['clusters'] if 'confidence' in cluster)
+            avg_confidence = total_confidence / num_clusters if num_clusters > 0 else 0
+            
+            # Verify serialization
+            if not all(isinstance(x, str) for x in [clusters_data, unassigned_alerts_data, current_alerts_batch_str, topology_info_str]):
+                raise TypeError('The serialized data is not a string')
+        except Exception as e:
+            print(f'Error while serializing data: {e}')
+            return None, history
+            
+        # Get previous clustering summaries for context
+        clustering_context = self._get_clustering_summaries()
+        
+        # Create system instructions with enhanced guidance and few-shot examples
+        system_instructions = f"""
+        You are an advanced network alert assessment system with the primary goal of identifying ROOT CAUSES of network events.
+        Your task is to evaluate the current state of alert clusters and provide recommendations that help identify the underlying
+        causes of network issues.
+        
+        # Current Clustering Stats:
+        - Total Alerts: {total_alerts}
+        - Number of Clusters: {num_clusters}
+        - Unassigned Alerts: {num_unassigned}
+        - Average Confidence: {avg_confidence:.2f}
+        
+        # Previous Steps:
+        {clustering_context}
+        
+        # CORE PRINCIPLES - ALWAYS PRIORITIZE:
+        
+        1. TEMPORAL RELATIONSHIPS:
+        - Alerts occurring within 15 minutes of each other may be related
+        - Sequential alerts often indicate cascading failures from a root cause
+        - The timing pattern is critical - think about "what happened first?"
+        - Time is a fundamental indicator of causal relationships
+        
+        2. TOPOLOGICAL RELATIONSHIPS:
+        - Alerts from the same device or connected devices are often related
+        - Network dependencies create causal chains (e.g., router failure → switch alerts)
+        - Physical or logical network proximity strongly suggests causality
+        - Topology often reveals the direction of impact from root cause to symptoms
+        
+        # Assessment Guidelines:
+        
+        When examining clusters and unassigned alerts, focus on:
+        
+        1. Temporal Causality:
+        - Which alerts occurred first? These are potential root causes
+        - Is there a clear sequence of alerts that suggests a propagating issue?
+        - Do time patterns suggest a common external trigger?
+        
+        2. Topological Causality:
+        - Are there dependent components in the network architecture?
+        - Do device relationships explain the alert pattern?
+        - Can you trace the path of failure through the network?
+        
+        3. Root Cause Identification:
+        - Which alerts represent the CAUSE vs. which represent SYMPTOMS?
+        - Are clusters centered around potential root cause alerts?
+        - Do unassigned alerts fit into existing cause-effect patterns?
+        
+        # IMPORTANT: Alert Descriptions are SECONDARY Evidence
+        
+        - Do NOT group alerts solely based on similar descriptions or types
+        - Descriptions provide context but aren't sufficient for root cause identification
+        - Only consider descriptions AFTER establishing temporal and topological relationships
+        - Similar alert messages without temporal/topological links often represent separate issues
+        
+        # Recommendation Guidelines:
+        
+        After your assessment, provide ONE clear recommendation for the NEXT ACTION that will best reveal root causes:
+        
+        1. TimeBasedClustering: Recommend when:
+        - Alert timestamps show patterns not yet captured in existing clusters
+        - Temporal sequences across different devices need further analysis
+        - There are potential cascading failures visible in the timeline
+        
+        2. TopologyBasedClustering: Recommend when:
+        - Network dependencies aren't fully reflected in current clusters
+        - Device relationships could reveal propagation paths
+        - Different network segments show potentially related issues
+        
+        3. Reorganize: Only recommend specific changes when:
+        - Clear temporal AND/OR topological relationships exist but weren't captured
+        - The change will better highlight probable root causes
+        - The evidence for the relationship is strong (not just similar descriptions)
+        
+        4. Finish: Recommend only when:
+        - Clusters clearly represent distinct root cause events
+        - Temporal and topological relationships are properly captured
+        - Further changes would not improve root cause identification
+        
+        # Reorganize Recommendation Format:
+        
+        When recommending Reorganize, use SIMPLE, CLEAR language and ALWAYS explain the temporal or topological reason:
+        - "Move alerts 1001, 1002 from unassigned to cluster_003, as they occurred 5 minutes after the router failure in cluster_003 and are from directly connected switches."
+        - "Create a new cluster with alerts 2001, 2002, 2003, which show a distinct authentication failure cascade starting at the primary authentication server and progressing to dependent services within 3 minutes."
+        - "Merge clusters 001 and 004, as cluster_001 contains router failures and cluster_004 contains alerts from downstream devices that occurred 2-5 minutes later."
+        
+        Keep reorganization instructions SIMPLE and FOCUSED on one operation that will best reveal causality.
+        
+        # Example Assessments and Recommendations:
+        
+        ## Example 1: Temporal Causality Driving Reorganization
+        
+        Assessment:
+        The current clustering shows 3 well-formed clusters. There are 2 unassigned alerts (1001, 1002) from switch devices that occurred exactly 3 minutes after the router failure alerts in Cluster_001. The timing strongly suggests these are downstream effects from the same root cause, and the topology information confirms these switches are directly connected to the affected router.
+        
+        Recommendation:
+        Reorganize[Move alerts 1001, 1002 from unassigned to cluster_001.] These alerts show a clear temporal sequence following the router failure in cluster_001, and the topology confirms they are connected devices experiencing downstream effects from the same root cause.
+        
+        ## Example 2: Creating New Cluster Based on Distinct Root Cause
+        
+        Assessment:
+        There are 4 clusters that appear appropriate. Among the 5 unassigned alerts, 3 of them (2001, 2002, 2003) form a clear temporal sequence starting with a database server failure (2001) followed by application errors on connected systems (2002, 2003) within 2 minutes. This pattern indicates a distinct root cause (database failure) separate from existing clusters, with its own cascade of effects.
+        
+        Recommendation:
+        Reorganize[Create a new cluster with alerts 2001, 2002, 2003.] These alerts show a clear temporal sequence starting with a database failure followed by dependent application errors, indicating a distinct root cause event separate from existing clusters.
+        
+        ## Example 3: Merging Clusters Based on Causal Chain
+        
+        Assessment:
+        Clusters 002 and 004 appear to be part of the same causal chain. Cluster_002 contains router failures at 14:05:23, while Cluster_004 contains alerts from switches and endpoints that are directly connected to these routers, occurring between 14:07:15 and 14:10:42. The topology confirms these devices are in the same network segment, and the timing strongly suggests the alerts in Cluster_004 are downstream effects from the root cause captured in Cluster_002.
+        
+        Recommendation:
+        Reorganize[Merge clusters 002 and 004.] Cluster_002 contains the root cause (router failures) while Cluster_004 contains the downstream effects on connected devices that occurred 2-5 minutes later, making them part of the same causal chain.
+        
+        ## Example 4: Recommending Time-Based Analysis
+        
+        Assessment:
+        The current clustering is primarily based on device types rather than causal relationships. Several clusters contain alerts from similar devices but don't reflect clear cause-effect patterns. The timestamps reveal potential sequences that aren't captured in the current structure. For example, alerts across Clusters 001, 003, and some unassigned alerts show a potential cascade pattern when arranged chronologically, suggesting a spreading issue that might have a single root cause.
+        
+        Recommendation:
+        TimeBasedClustering. The current clustering doesn't capture the temporal sequences that are visible across different clusters. Time-based analysis would help identify potential cascading patterns and better reveal the progression of failures from root causes to symptoms.
+        
+        ## Example 5: Recommending Topology-Based Analysis
+        
+        Assessment:
+        The current clusters are grouped well by time, but network dependencies aren't reflected. For instance, Cluster_001 and Cluster_003 involve devices that are directly connected according to the topology data, with Cluster_001 alerts preceding Cluster_003 alerts by approximately 4 minutes. This suggests a potential propagation of issues through the network that should be examined through the lens of network topology.
+        
+        Recommendation:
+        TopologyBasedClustering. The current time-based clusters don't reflect the network dependencies that could explain how issues propagated. Topology-based clustering would help identify whether alerts in separate clusters are actually part of the same causal chain due to network connections.
+        
+        Be decisive and provide a single clear recommendation focused on revealing root causes through temporal and topological relationships.
+        """
+        
+        # Create user message
+        user_message = f"""
+        Please assess the current state of alert clusters with a focus on identifying root causes through temporal and topological relationships.
+        
+        CURRENT ALERT BATCH:
+        {current_alerts_batch_str}
+        
+        CURRENT CLUSTERS:
+        {clusters_data}
+        
+        UNASSIGNED ALERTS:
+        {unassigned_alerts_data}
+        
+        TOPOLOGY INFORMATION:
+        {topology_info_str}
+        
+        Please provide:
+        1. A detailed assessment focusing on temporal sequences and network dependencies
+        2. Analysis of whether current clusters reflect probable root causes and their effects
+        3. A specific recommendation for the next action that will best reveal true root causes
+        """
+        
+        # Prepare messages for LLM
+        messages = [
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": user_message}
+        ]
+        
+        # Validate messages
+        for msg in messages:
+            if not isinstance(msg["content"], str):
+                raise ValueError(f"Message content is not a string: {msg['content']}")
+                
+        # Add messages to function-specific history
+        history += messages
         self.function_histories["assess"] = history
         
-        # Store response in recent reasoning
-        self.recent_reasoning["assess"] = response_content
+        # Call the LLM
+        reply = self._llm(history, temperature=temperature, model=self.llm_model)
         
-        # Create a summary for the ReAct framework
-        summary = f"Assessment:\n- Evaluated {num_clusters} clusters and {num_unassigned} unassigned alerts\n"
-        
-        # Extract recommendation
-        recommendation = self._extract_recommendation(response_content)
-        summary += f"- Recommended: {recommendation}\n"
-        
-        # Add to ReAct history
-        self.react_history.append({
-            "action": "Reassess",
-            "summary": summary
-        })
-        
-        return reply, history
-        
-    else:
-        print("Invalid response from LLM")
-        return None, history
+        # Validate response
+        if 'choices' in reply and len(reply['choices']) > 0:
+            response_content = reply['choices'][0]['message']['content']
+            history.append({"role": "assistant", "content": response_content})
+            self.function_histories["assess"] = history
+            
+            # Store response in recent reasoning
+            self.recent_reasoning["assess"] = response_content
+            
+            # Create a summary for the ReAct framework
+            summary = f"Assessment:\n- Evaluated {num_clusters} clusters and {num_unassigned} unassigned alerts\n"
+            
+            # Extract recommendation
+            recommendation = self._extract_recommendation(response_content)
+            summary += f"- Recommended: {recommendation}\n"
+            
+            # Add to ReAct history
+            self.react_history.append({
+                "action": "Reassess",
+                "summary": summary
+            })
+            
+            return reply, history
+            
+        else:
+            print("Invalid response from LLM")
+            return None, history
     
             
     def reorganize_llm(self, instructions, recent_assessment=None, temperature=0.01):
