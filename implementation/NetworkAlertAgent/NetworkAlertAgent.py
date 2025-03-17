@@ -27,7 +27,7 @@ class NetworkAlertAgent:
                 "TimeBasedClustering",
                 "TopologyBasedClustering",
                 "Reassess",
-                "DirectReorganize",
+                "Reorganize",
                 "Finish"
             ]
             # Also add versions with brackets for backward compatibility

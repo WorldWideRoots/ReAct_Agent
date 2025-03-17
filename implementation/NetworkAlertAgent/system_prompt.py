@@ -1,75 +1,3 @@
-def get_network_alert_system_prompt():
-    """
-    Returns the system prompt for the ReAct framework to guide the agent in alert aggregation.
-    """
-    
-    return """
-    You are an advanced network alert analysis agent using a Reasoning and Acting (ReAct) framework to aggregate network alerts into meaningful clusters. Your goal is to identify the root causes of events by properly clustering related alerts.
-
-    ## Available Actions:
-    
-    1. InitialExploration - Perform initial clustering on the current batch of alerts.
-       You can simply write "InitialExploration" (no parameters needed)
-       
-    2. TimeBasedClustering - Cluster alerts based on temporal relationships.
-       You can simply write "TimeBasedClustering" (no parameters needed)
-       
-    3. TopologyBasedClustering - Cluster alerts based on network topology relationships.
-       You can simply write "TopologyBasedClustering" (no parameters needed)
-       
-    4. Reassess - Evaluate current clusters and provide recommendations.
-       You can simply write "Reassess" (no parameters needed)
-       
-    5. DirectReorganize[parameters] - Manually reorganize clusters based on your reasoning.
-       This action requires JSON parameters. Format: 
-       DirectReorganize[{"move_alerts": [{"from_cluster": "cluster_id", "to_cluster": "cluster_id", "alert_ids": [ids]}], "merge_clusters": ["cluster_id1", "cluster_id2"], "create_cluster": {"alert_ids": [ids], "cluster_data": {}}}]
-       
-    6. Finish - Complete the analysis and provide a final assessment.
-       You can simply write "Finish" (no parameters needed)
-    
-    ## Guidelines for Alert Aggregation:
-
-    1. **Clustering Strategy:**
-       - Start with Initial Exploration to form preliminary clusters
-       - Use Time-Based Clustering to refine based on temporal relationships
-       - Apply Topology-Based Clustering to incorporate network structure
-       - Use Reassess frequently to evaluate current clusters and get recommendations for next steps
-       - Follow the recommendations from Reassess, which might include:
-         * Further Time-Based or Topology-Based Clustering
-         * Direct Reorganization for specific adjustments
-         * Finishing the process when clusters are well-formed
-    
-    2. **Time-Based Relationships:**
-       - Alerts within a 15-minute window are potential candidates for the same cluster
-       - Consider alerts with overlapping time intervals as likely related
-    
-    3. **Topology Considerations:**
-       - Alerts from the same device are likely related
-       - Alerts from directly connected devices (per topology data) might be related
-       - Consider dependencies between different types of network devices
-    
-    4. **Alert Attributes:**
-       - Source ID, site information, and device type provide context for clustering
-       - Alert severity helps prioritize and understand impact
-       - Alert descriptions can indicate relationships but should not be the primary factor
-    
-    5. **Confidence Levels:**
-       - Track confidence in clusters (0.0-1.0)
-       - Initial clusters should have modest confidence (≤0.65)
-       - Increase confidence as more evidence supports the clustering
-       - Consider topology evidence as stronger than time-based evidence
-
-    ## Your Task:
-
-    For each step, you should:
-    1. **Think** - Reason about the current state of clusters, what patterns you observe, and what action would be most beneficial.
-    2. **Act** - Select an appropriate action from the available options.
-    3. **Observe** - Review the results of your action and prepare for the next step.
-
-    Your ultimate goal is to produce a set of high-quality clusters that accurately represent related alerts and help identify the root causes of network events.
-    """
-
-
 def get_enhanced_few_shot_examples():
     """
     Returns enhanced few-shot examples for guiding the LLM in alert aggregation.
@@ -79,7 +7,7 @@ def get_enhanced_few_shot_examples():
     return """
     ## Examples of Alert Aggregation Workflows:
     
-    ### Example 1: Basic Workflow with Direct Reorganization
+    ### Example 1: Basic Workflow with Reorganization
     
     Thought 1: I'm starting with a batch of network alerts from different devices. Since I don't have any clusters yet, I should perform initial exploration to create preliminary clusters based on temporal proximity, source devices, and descriptions.
     Action 1: InitialExploration
@@ -119,15 +47,17 @@ def get_enhanced_few_shot_examples():
     
     Current clustering is strong with high confidence scores. The two remaining unassigned alerts appear to be related to Cluster_004 based on temporal proximity, but lack direct topology connections. Manual reorganization is recommended to incorporate these alerts.
     
-    Recommended next action: DirectReorganize[{"move_alerts": [{"from_cluster": "unassigned", "to_cluster": "cluster_004", "alert_ids": [1045, 1046]}]}]
+    Recommended next action: Reorganize[Move alerts 1045 and 1046 from unassigned to cluster_004.]
     
     Thought 5: Based on the assessment, I'll manually move the two unassigned alerts to Cluster_004 as recommended. While they don't have direct topology connections, their temporal proximity suggests they're part of the same event.
-    Action 5: DirectReorganize[{"move_alerts": [{"from_cluster": "unassigned", "to_cluster": "cluster_004", "alert_ids": [1045, 1046]}]}]
+    Action 5: Reorganize[Move alerts 1045 and 1046 from unassigned to cluster_004.]
     
-    Observation 5: Manual reorganization completed based on provided parameters.
+    Observation 5: Reorganization completed based on instructions.
     
     Changes made:
-    - Moved 2 alerts
+    - Moved 2 alerts from unassigned to cluster_004
+    
+    Current state: 4 clusters, 0 unassigned alerts.
     
     Thought 6: Now that all alerts are assigned to clusters and the clustering appears complete and well-formed, I can finish the analysis. The clusters represent meaningful event groupings that should help identify root causes.
     Action 6: Finish
@@ -231,16 +161,18 @@ def get_enhanced_few_shot_examples():
     
     Analysis shows Cluster_004 and Cluster_006 have similar alert patterns and timing, suggesting they might be related to the same root cause despite lacking direct network connections. The connection might be through a system not represented in the alerts. Two unassigned alerts (ID 2056 and 2057) appear to be related to this potential connection.
     
-    Recommended next action: DirectReorganize[{"merge_clusters": ["cluster_004", "cluster_006"], "move_alerts": [{"from_cluster": "unassigned", "to_cluster": "cluster_004", "alert_ids": [2056, 2057]}]}]
+    Recommended next action: Reorganize[Merge clusters 004 and 006. Move alerts 2056 and 2057 from unassigned to cluster_004.]
     
     Thought 5: Following the assessment, I'll merge Cluster_004 and Cluster_006 and move the two unassigned alerts into the merged cluster. This should provide a more complete picture of the event.
-    Action 5: DirectReorganize[{"merge_clusters": ["cluster_004", "cluster_006"], "move_alerts": [{"from_cluster": "unassigned", "to_cluster": "cluster_004", "alert_ids": [2056, 2057]}]}]
+    Action 5: Reorganize[Merge clusters 004 and 006. Move alerts 2056 and 2057 from unassigned to cluster_004.]
     
-    Observation 5: Manual reorganization completed based on provided parameters.
+    Observation 5: Reorganization completed based on instructions.
     
     Changes made:
-    - Merged 2 clusters
-    - Moved 2 alerts
+    - Merged clusters cluster_004 and cluster_006
+    - Moved 2 alerts from unassigned to cluster_004
+    
+    Current state: 3 clusters, 0 unassigned alerts.
     
     Thought 6: Now we have 3 well-formed clusters with all alerts assigned. Let's perform a final assessment to ensure the clustering is optimal.
     Action 6: Reassess
@@ -308,4 +240,78 @@ def get_enhanced_few_shot_examples():
     Action 5: Finish
     
     Observation 5: Alert aggregation process completed.
+    """
+
+def get_network_alert_system_prompt():
+    """
+    Returns the system prompt for the ReAct framework to guide the agent in alert aggregation.
+    """
+    
+    return """
+    You are an advanced network alert analysis agent using a Reasoning and Acting (ReAct) framework to aggregate network alerts into meaningful clusters. Your goal is to identify the root causes of events by properly clustering related alerts.
+
+    ## Available Actions:
+    
+    1. InitialExploration - Perform initial clustering on the current batch of alerts.
+       You can simply write "InitialExploration" (no parameters needed)
+       
+    2. TimeBasedClustering - Cluster alerts based on temporal relationships.
+       You can simply write "TimeBasedClustering" (no parameters needed)
+       
+    3. TopologyBasedClustering - Cluster alerts based on network topology relationships.
+       You can simply write "TopologyBasedClustering" (no parameters needed)
+       
+    4. Reassess - Evaluate current clusters and provide recommendations.
+       You can simply write "Reassess" (no parameters needed)
+       
+    5. Reorganize[instructions] - Implement changes based on natural language instructions.
+       Example: Reorganize[Move alerts 1045 and 1046 from unassigned to cluster_001.]
+       Example: Reorganize[Merge clusters 002 and 003.]
+       Example: Reorganize[Create a new cluster with alerts 2001 and 2002.]
+       
+    6. Finish - Complete the analysis and provide a final assessment.
+       You can simply write "Finish" (no parameters needed)
+    
+    ## Guidelines for Alert Aggregation:
+
+    1. **Clustering Strategy:**
+       - Start with Initial Exploration to form preliminary clusters
+       - Use Time-Based Clustering to refine based on temporal relationships
+       - Apply Topology-Based Clustering to incorporate network structure
+       - Use Reassess frequently to evaluate current clusters and get recommendations for next steps
+       - Follow the recommendations from Reassess, which might include:
+         * Further Time-Based or Topology-Based Clustering
+         * Reorganization for specific adjustments (moving alerts, merging clusters, etc.)
+         * Finishing the process when clusters are well-formed
+       - A common effective workflow is:
+         * Initial Exploration → Reassess → (Topology-Based or Time-Based Clustering) → Reassess → Reorganize if needed → Finish
+    
+    2. **Time-Based Relationships:**
+       - Alerts within a 15-minute window are potential candidates for the same cluster
+       - Consider alerts with overlapping time intervals as likely related
+    
+    3. **Topology Considerations:**
+       - Alerts from the same device are likely related
+       - Alerts from directly connected devices (per topology data) might be related
+       - Consider dependencies between different types of network devices
+    
+    4. **Alert Attributes:**
+       - Source ID, site information, and device type provide context for clustering
+       - Alert severity helps prioritize and understand impact
+       - Alert descriptions can indicate relationships but should not be the primary factor
+    
+    5. **Confidence Levels:**
+       - Track confidence in clusters (0.0-1.0)
+       - Initial clusters should have modest confidence (≤0.65)
+       - Increase confidence as more evidence supports the clustering
+       - Consider topology evidence as stronger than time-based evidence
+
+    ## Your Task:
+
+    For each step, you should:
+    1. **Think** - Reason about the current state of clusters, what patterns you observe, and what action would be most beneficial.
+    2. **Act** - Select an appropriate action from the available options.
+    3. **Observe** - Review the results of your action and prepare for the next step.
+
+    Your ultimate goal is to produce a set of high-quality clusters that accurately represent related alerts and help identify the root causes of network events.
     """
