@@ -1,4 +1,71 @@
-import json
+# Verify the action format - with better debugging
+            valid_format = False
+            
+            # For debugging, let's log what we're checking
+            actual_action = action_str.strip()
+            
+            # Check for extra "Action X:" prefix that might have been added by the LLM
+            action_prefix_match = re.match(r'(?:Action\s+\d+[a-z]?:?\s*)(.*)', actual_action)
+            if action_prefix_match:
+                actual_action = action_prefix_match.group(1).strip()
+                print(f"DEBUG: Removed 'Action X:' prefix, actual action is: {actual_action}")
+            
+            # Check for exact matches with action names (without parameters)
+            if actual_action in self.valid_prefixes:
+                valid_format = True
+                # Add empty brackets for consistency in internal processing
+                action_str = f"{actual_action}[]"
+                if to_print:
+                    print(f"DEBUG: Accepted action without brackets: {actual_action}")
+            
+            # Check for actions with brackets
+            elif (any(actual_action.startswith(prefix + "[") for prefix in self.valid_prefixes) 
+                  and actual_action.endswith("]")):
+                valid_format = True
+                # Use the exact action string as provided
+                action_str = actual_action
+                if to_print:
+                    print(f"DEBUG: Accepted action with brackets: {actual_action}")
+                    
+            # Check for actions with empty brackets
+            elif any(actual_action == f"{prefix}[]" for prefix in self.valid_prefixes):
+                valid_format = True
+                # Use the action string as is
+                action_str = actual_action
+                if to_print:
+                    print(f"DEBUG: Accepted action with empty brackets: {actual_action}")
+                    
+            # Check for actions with the format "Reorganize" without brackets but followed by text
+            elif any(actual_action.startswith(prefix) for prefix in self.valid_prefixes):
+                # Find which prefix it starts with
+                matching_prefix = next((prefix for prefix in self.valid_prefixes if actual_action.startswith(prefix)), None)
+                if matching_prefix and matching_prefix == "Reorganize":
+                    # This is a Reorganize action without proper brackets - fix it
+                    instructions = actual_action[len(matching_prefix):].strip()
+                    action_str = f"{matching_prefix}[{instructions}]"
+                    valid_format = True
+                    if to_print:
+                        print(f"DEBUG: Fixed Reorganize action format: {action_str}")
+                
+            if not valid_format and to_print:
+                print(f"DEBUG: Invalid action: '{actual_action}'. Valid prefixes: {self.valid_prefixes}")
+                print(f"DEBUG: Is in valid prefixes: {actual_action in self.valid_prefixes}")
+                
+                # Check if it's a formatting issue - the action might start with a valid prefix but have extra text
+                for prefix in self.valid_prefixes:
+                    if actual_action.startswith(prefix):
+                        print(f"DEBUG: Action starts with valid prefix '{prefix}' but has format issues")
+                        # Check if it's missing closing bracket
+                        if prefix == "Reorganize" and "[" in actual_action and "]" not in actual_action:
+                            print(f"DEBUG: Reorganize action is missing closing bracket")
+            
+            if not valid_format:
+                # Invalid action format
+                obs_str = f"Invalid action: '{actual_action}'. Valid actions are: {', '.join(self.valid_prefixes)}. You can also use '{self.valid_prefixes[0]}[]' format."
+                self.react_messages.append({"role": "system", "content": f"Observation {i}: {obs_str}"})
+                if to_print:
+                    print(f"Observation {i}: {obs_str}")
+                continueimport json
 from typing import Union, List, Dict, Any
 import gym
 import requests

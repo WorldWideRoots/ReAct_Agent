@@ -9,16 +9,23 @@ def _parse_and_implement_reorganize(self, response_content):
             list: Description of changes made
         """
         changes_made = []
+        print(f"DEBUG: Parsing reorganize instructions: {response_content[:100]}...")
         
-        # Look for common operation patterns
-        move_pattern = r"move\s+alert[s]?\s+(\d+(?:,\s*\d+)*)\s+from\s+(\w+)\s+to\s+(\w+)"
-        merge_pattern = r"merge\s+cluster[s]?\s+(\w+)\s+and\s+(\w+)"
-        create_pattern = r"create\s+(?:a\s+)?new\s+cluster(?:\s+\(?([\w_]+)?\)?)(?:\s+with\s+alert[s]?\s+(\d+(?:,\s*\d+)*)?)?"
+        # Look for common operation patterns with more flexible matching
+        # Updated patterns to be more flexible
+        move_pattern = r"(?:move|add)\s+alert[s]?\s+(\d+(?:,\s*\d+)*)\s+from\s+(\w+)\s+to\s+(\w+)"
+        merge_pattern = r"(?:merge|combine)\s+cluster[s]?\s+(\w+)(?:\s+and|\s*,\s*)\s+(\w+)"
+        # More flexible create pattern that matches various formats
+        create_pattern = r"(?:create|make|add)\s+(?:a\s+)?(?:new\s+)?cluster(?:\s+(?:with\s+id\s+|id\s+|with\s+|named\s+|called\s+)?(\w+))?(?:\s+with\s+alert[s]?\s+(\d+(?:,\s*\d+)*))?|create\s+cluster_(\d+)\s+with\s+alerts\s+(\d+(?:,\s*\d+)*)"
         
         # Find all move operations
+        print(f"DEBUG: Looking for move operations")
         move_matches = re.finditer(move_pattern, response_content.lower())
         for match in move_matches:
             alert_ids_str, src_cluster, dst_cluster = match.groups()
+            print(f"DEBUG: Found move match: {match.group(0)}")
+            print(f"DEBUG: Alert IDs: {alert_ids_str}, From: {src_cluster}, To: {dst_cluster}")
+            
             # Parse alert IDs
             alert_ids = [int(aid.strip()) for aid in alert_ids_str.split(',') if aid.strip().isdigit()]
             
@@ -38,20 +45,28 @@ def _parse_and_implement_reorganize(self, response_content):
                 dst_cluster_id = dst_cluster
             
             # Implement the move
-            if src_cluster_id == "unassigned":
-                self._move_from_unassigned_to_cluster(alert_ids, dst_cluster_id)
-                changes_made.append(f"Moved {len(alert_ids)} alerts from unassigned to {dst_cluster_id}")
-            elif dst_cluster_id == "unassigned":
-                self._move_from_cluster_to_unassigned(alert_ids, src_cluster_id)
-                changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to unassigned")
-            else:
-                self._move_between_clusters(alert_ids, src_cluster_id, dst_cluster_id)
-                changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to {dst_cluster_id}")
+            try:
+                if src_cluster_id == "unassigned":
+                    self._move_from_unassigned_to_cluster(alert_ids, dst_cluster_id)
+                    changes_made.append(f"Moved {len(alert_ids)} alerts from unassigned to {dst_cluster_id}")
+                elif dst_cluster_id == "unassigned":
+                    self._move_from_cluster_to_unassigned(alert_ids, src_cluster_id)
+                    changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to unassigned")
+                else:
+                    self._move_between_clusters(alert_ids, src_cluster_id, dst_cluster_id)
+                    changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to {dst_cluster_id}")
+            except Exception as e:
+                error_msg = f"Error moving alerts: {str(e)}"
+                print(f"DEBUG: {error_msg}")
+                changes_made.append(error_msg)
         
         # Find all merge operations
+        print(f"DEBUG: Looking for merge operations")
         merge_matches = re.finditer(merge_pattern, response_content.lower())
         for match in merge_matches:
             cluster_id1, cluster_id2 = match.groups()
+            print(f"DEBUG: Found merge match: {match.group(0)}")
+            print(f"DEBUG: Clusters to merge: {cluster_id1} and {cluster_id2}")
             
             # Normalize cluster names
             if cluster_id1.startswith("cluster_"):
@@ -69,18 +84,46 @@ def _parse_and_implement_reorganize(self, response_content):
                 cluster_id2_norm = cluster_id2
             
             # Implement the merge
-            self._merge_clusters([cluster_id1_norm, cluster_id2_norm])
-            changes_made.append(f"Merged clusters {cluster_id1_norm} and {cluster_id2_norm}")
+            try:
+                self._merge_clusters([cluster_id1_norm, cluster_id2_norm])
+                changes_made.append(f"Merged clusters {cluster_id1_norm} and {cluster_id2_norm}")
+            except Exception as e:
+                error_msg = f"Error merging clusters: {str(e)}"
+                print(f"DEBUG: {error_msg}")
+                changes_made.append(error_msg)
         
         # Find all create operations
+        print(f"DEBUG: Looking for create operations with pattern: {create_pattern}")
+        create_matches = re.finditer(create_pattern, response_content.lower())
+        for match in move_matches:
+            print(f"DEBUG: Create match groups: {match.groups()}")
+            
+        create_operations_found = False
         create_matches = re.finditer(create_pattern, response_content.lower())
         for match in create_matches:
-            cluster_id, alert_ids_str = match.groups()
+            create_operations_found = True
+            print(f"DEBUG: Found create match: {match.group(0)}")
+            print(f"DEBUG: Match groups: {match.groups()}")
             
-            # Generate a cluster ID if not provided
-            if not cluster_id:
+            # Extract cluster ID and alert IDs from different possible group patterns
+            groups = match.groups()
+            
+            # Handle different patterns
+            if len(groups) >= 4 and groups[2] is not None and groups[3] is not None:
+                # Pattern: create cluster_123 with alerts 1,2,3
+                cluster_id = f"cluster_{groups[2]}"
+                alert_ids_str = groups[3]
+            elif groups[0] is not None:
+                # Pattern: create a new cluster cluster_123 with alerts...
+                cluster_id = groups[0]
+                alert_ids_str = groups[1] if len(groups) > 1 and groups[1] is not None else ""
+            else:
+                # If no explicit cluster ID, generate one
                 cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
-            elif not cluster_id.startswith("cluster_") and cluster_id.isdigit():
+                alert_ids_str = groups[1] if len(groups) > 1 and groups[1] is not None else ""
+            
+            # Normalize cluster ID
+            if not cluster_id.startswith("cluster_") and cluster_id.isdigit():
                 cluster_id = f"cluster_{int(cluster_id):03d}"
                 
             # Parse alert IDs if provided
@@ -88,20 +131,68 @@ def _parse_and_implement_reorganize(self, response_content):
             if alert_ids_str:
                 alert_ids = [int(aid.strip()) for aid in alert_ids_str.split(',') if aid.strip().isdigit()]
             
+            print(f"DEBUG: Creating cluster {cluster_id} with {len(alert_ids)} alerts")
+            
             # Implement the create
-            cluster_data = {
-                "cluster_id": cluster_id,
-                "confidence": 0.5,
-                "Description": "Manually created cluster"
-            }
-            self._create_new_cluster(alert_ids, cluster_data)
-            changes_made.append(f"Created new cluster {cluster_id} with {len(alert_ids)} alerts")
+            try:
+                cluster_data = {
+                    "cluster_id": cluster_id,
+                    "chains of thoughts": "Manually created cluster",
+                    "source_ids": "",
+                    "confidence": 0.5,
+                    "severity": "medium",
+                    "time": {"start": 0, "end": 0},
+                    "Description": "Manually created cluster"
+                }
+                self._create_new_cluster(alert_ids, cluster_data)
+                changes_made.append(f"Created new cluster {cluster_id} with {len(alert_ids)} alerts")
+            except Exception as e:
+                error_msg = f"Error creating cluster: {str(e)}"
+                print(f"DEBUG: {error_msg}")
+                changes_made.append(error_msg)
         
         # If no operations were found but there's text indicating changes
         if not changes_made and any(op in response_content.lower() for op in ["move", "merge", "create"]):
+            print(f"DEBUG: No standard operations matched, trying fallback parsing")
             # Try more lenient parsing as a fallback
-            changes_made = self._fallback_parse_reorganize(response_content)
+            fallback_changes = self._fallback_parse_reorganize(response_content)
+            changes_made.extend(fallback_changes)
             
+        # If still no changes made, try one more direct approach for cluster creation
+        if not changes_made and "create" in response_content.lower() and "cluster" in response_content.lower():
+            print(f"DEBUG: Attempting direct cluster creation pattern matching")
+            # Special case for "Create a new cluster with alerts X, Y, Z"
+            try:
+                # Direct extraction of alert IDs
+                alert_ids = [int(num) for num in re.findall(r'\d+', response_content) 
+                             if len(str(num)) > 5]  # Assuming alert IDs are large numbers
+                
+                # Check for cluster ID specification
+                cluster_id_match = re.search(r'cluster[_\s]*(\d+)', response_content)
+                if cluster_id_match:
+                    cluster_id = f"cluster_{int(cluster_id_match.group(1)):03d}"
+                else:
+                    cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
+                
+                print(f"DEBUG: Direct creation - Cluster ID: {cluster_id}, Alert IDs: {alert_ids[:5]}...")
+                
+                # Create the cluster
+                cluster_data = {
+                    "cluster_id": cluster_id,
+                    "chains of thoughts": "Manually created cluster via direct pattern",
+                    "source_ids": "",
+                    "confidence": 0.5,
+                    "severity": "medium",
+                    "time": {"start": 0, "end": 0},
+                    "Description": "Manually created cluster"
+                }
+                self._create_new_cluster(alert_ids, cluster_data)
+                changes_made.append(f"Created new cluster {cluster_id} with {len(alert_ids)} alerts (direct method)")
+            except Exception as e:
+                error_msg = f"Error in direct cluster creation: {str(e)}"
+                print(f"DEBUG: {error_msg}")
+                changes_made.append(error_msg)
+        
         return changes_made
         
     def _fallback_parse_reorganize(self, response_content):
@@ -117,13 +208,34 @@ def _parse_and_implement_reorganize(self, response_content):
         """
         changes_made = []
         lines = response_content.lower().split('\n')
+        print(f"DEBUG: Running fallback parser on {len(lines)} lines")
         
-        for line in lines:
+        # Scan for specific patterns related to cluster operations across all lines
+        response_text = response_content.lower()
+        
+        # Detect cluster_id pattern
+        cluster_ids = re.findall(r'cluster[_\s]*(\d+)', response_text)
+        print(f"DEBUG: Found potential cluster IDs: {cluster_ids}")
+        
+        # Detect alert IDs - looking for 8-9 digit numbers (typical for alert IDs)
+        alert_ids_all = [int(num) for num in re.findall(r'\b\d{6,9}\b', response_text)]
+        print(f"DEBUG: Found potential alert IDs: {len(alert_ids_all)} IDs")
+        
+        # Process each line separately
+        for i, line in enumerate(lines):
             line = line.strip()
+            print(f"DEBUG: Processing line {i}: {line[:50]}...")
+            
             # Simple move operation
             if "move" in line and "alert" in line and "to" in line:
                 # Extract alert IDs - look for numbers
-                alert_ids = [int(n) for n in re.findall(r'\d+', line) if int(n) < 10000]  # Assume alert IDs < 10000
+                alert_ids = [int(n) for n in re.findall(r'\d+', line) if 100000 <= int(n) < 1000000000]  # Typical alert ID range
+                
+                # Skip if no alert IDs found
+                if not alert_ids:
+                    continue
+                
+                print(f"DEBUG: Found move operation with alert IDs: {alert_ids}")
                 
                 # Extract cluster names - look for "cluster" or "unassigned"
                 if "unassigned" in line and "cluster" in line:
@@ -133,39 +245,123 @@ def _parse_and_implement_reorganize(self, response_content):
                         cluster_matches = re.findall(r'cluster[_\s]*(\d+)', line)
                         if cluster_matches:
                             dst_cluster = f"cluster_{int(cluster_matches[0]):03d}"
-                            self._move_from_unassigned_to_cluster(alert_ids, dst_cluster)
-                            changes_made.append(f"Moved {len(alert_ids)} alerts from unassigned to {dst_cluster}")
+                            try:
+                                self._move_from_unassigned_to_cluster(alert_ids, dst_cluster)
+                                changes_made.append(f"Moved {len(alert_ids)} alerts from unassigned to {dst_cluster} (fallback)")
+                            except Exception as e:
+                                error_msg = f"Error in fallback move: {str(e)}"
+                                print(f"DEBUG: {error_msg}")
+                                changes_made.append(error_msg)
                     else:
                         # From cluster to unassigned
                         cluster_matches = re.findall(r'cluster[_\s]*(\d+)', line)
                         if cluster_matches:
                             src_cluster = f"cluster_{int(cluster_matches[0]):03d}"
-                            self._move_from_cluster_to_unassigned(alert_ids, src_cluster)
-                            changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster} to unassigned")
+                            try:
+                                self._move_from_cluster_to_unassigned(alert_ids, src_cluster)
+                                changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster} to unassigned (fallback)")
+                            except Exception as e:
+                                error_msg = f"Error in fallback move: {str(e)}"
+                                print(f"DEBUG: {error_msg}")
+                                changes_made.append(error_msg)
             
             # Simple merge operation
             elif "merge" in line and "cluster" in line:
                 cluster_matches = re.findall(r'cluster[_\s]*(\d+)', line)
                 if len(cluster_matches) >= 2:
                     cluster_ids = [f"cluster_{int(cid):03d}" for cid in cluster_matches[:2]]
-                    self._merge_clusters(cluster_ids)
-                    changes_made.append(f"Merged clusters {cluster_ids[0]} and {cluster_ids[1]}")
+                    try:
+                        self._merge_clusters(cluster_ids)
+                        changes_made.append(f"Merged clusters {cluster_ids[0]} and {cluster_ids[1]} (fallback)")
+                    except Exception as e:
+                        error_msg = f"Error in fallback merge: {str(e)}"
+                        print(f"DEBUG: {error_msg}")
+                        changes_made.append(error_msg)
             
             # Simple create operation
             elif "create" in line and "cluster" in line:
-                alert_ids = [int(n) for n in re.findall(r'\d+', line) if int(n) < 10000]  # Assume alert IDs < 10000
-                if alert_ids:
-                    cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
+                # Look for specific cluster number for new cluster
+                new_cluster_id = None
+                cluster_number_match = re.search(r'cluster[_\s]*(\d+)', line)
+                if cluster_number_match:
+                    new_cluster_id = f"cluster_{int(cluster_number_match.group(1)):03d}"
+                else:
+                    # Generate a new ID if none specified
+                    new_cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
+                
+                # Look for alert IDs in this line or next few lines
+                alert_ids = []
+                
+                # Check current line first
+                alert_ids = [int(n) for n in re.findall(r'\d+', line) if 100000 <= int(n) < 1000000000]
+                
+                # If no alert IDs on this line, check next few lines
+                if not alert_ids:
+                    search_limit = min(i + 5, len(lines))
+                    for j in range(i + 1, search_limit):
+                        next_line = lines[j].strip()
+                        if "alert" in next_line:
+                            alert_ids = [int(n) for n in re.findall(r'\d+', next_line) if 100000 <= int(n) < 1000000000]
+                            if alert_ids:
+                                break
+                
+                # If no alert IDs found after searching, look in the entire text for large numbers
+                if not alert_ids and alert_ids_all:
+                    print(f"DEBUG: No alert IDs found in nearby lines, using all alert IDs from text")
+                    alert_ids = alert_ids_all
+                
+                if new_cluster_id:
+                    try:
+                        print(f"DEBUG: Creating new cluster {new_cluster_id} with {len(alert_ids)} alerts (fallback)")
+                        cluster_data = {
+                            "cluster_id": new_cluster_id,
+                            "chains of thoughts": "Manually created cluster via fallback parser",
+                            "source_ids": "",
+                            "confidence": 0.5,
+                            "severity": "medium",
+                            "time": {"start": 0, "end": 0},
+                            "Description": "Manually created cluster"
+                        }
+                        self._create_new_cluster(alert_ids, cluster_data)
+                        changes_made.append(f"Created new cluster {new_cluster_id} with {len(alert_ids)} alerts (fallback)")
+                    except Exception as e:
+                        error_msg = f"Error in fallback cluster creation: {str(e)}"
+                        print(f"DEBUG: {error_msg}")
+                        changes_made.append(error_msg)
+        
+        # Super fallback mode - if we still haven't found any operations
+        if not changes_made:
+            print(f"DEBUG: No operations found in line-by-line parsing, attempting super fallback mode")
+            
+            # For cluster creation, if "create" and "cluster" are present anywhere
+            if "create" in response_text and "cluster" in response_text:
+                new_cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
+                
+                # If "cluster_004" or similar is specified anywhere
+                for cluster_id in cluster_ids:
+                    if int(cluster_id) > len(self.current_clusters['clusters']):
+                        new_cluster_id = f"cluster_{int(cluster_id):03d}"
+                        break
+                
+                try:
+                    print(f"DEBUG: Super fallback - creating cluster {new_cluster_id} with {len(alert_ids_all)} alerts")
                     cluster_data = {
-                        "cluster_id": cluster_id,
+                        "cluster_id": new_cluster_id,
+                        "chains of thoughts": "Manually created cluster via super fallback",
+                        "source_ids": "",
                         "confidence": 0.5,
+                        "severity": "medium",
+                        "time": {"start": 0, "end": 0},
                         "Description": "Manually created cluster"
                     }
-                    self._create_new_cluster(alert_ids, cluster_data)
-                    changes_made.append(f"Created new cluster {cluster_id} with {len(alert_ids)} alerts")
+                    self._create_new_cluster(alert_ids_all, cluster_data)
+                    changes_made.append(f"Created new cluster {new_cluster_id} with {len(alert_ids_all)} alerts (super fallback)")
+                except Exception as e:
+                    error_msg = f"Error in super fallback cluster creation: {str(e)}"
+                    print(f"DEBUG: {error_msg}")
+                    changes_made.append(error_msg)
         
-        return changes_made    
-def reorganize_llm(self, instructions, recent_assessment=None, temperature=0.01):
+        return changes_made    def reorganize_llm(self, instructions, recent_assessment=None, temperature=0.01):
         """
         Implement reorganization based on natural language instructions.
         
@@ -320,8 +516,7 @@ def reorganize_llm(self, instructions, recent_assessment=None, temperature=0.01)
                 return reply, history, ["Error implementing changes: " + str(e)]
         else:
             print("Invalid response from LLM")
-            return None, history, None    
-    def assess_llm(self, temperature=0.01):
+            return None, history, None    def assess_llm(self, temperature=0.01):
         """
         Assess the current clustering state and provide recommendations for next steps.
         
@@ -493,8 +688,7 @@ def reorganize_llm(self, instructions, recent_assessment=None, temperature=0.01)
             
         else:
             print("Invalid response from LLM")
-            return None, history    
-    def topology_based_clustering_llm(self, temperature=0.01):
+            return None, history    def topology_based_clustering_llm(self, temperature=0.01):
         """
         Perform topology-based clustering on the current batch of alerts.
         Uses a dedicated history for this function and creates a summary for the ReAct framework.
