@@ -1770,3 +1770,57 @@ def _create_new_cluster(self, alert_ids, cluster_data):
     for alert_id in alert_ids:
         if alert_id in self.current_clusters["unassigned_alerts"]:
             self.current_clusters["unassigned_alerts"].remove(alert_id)
+
+
+
+def _safe_json_parse(self, json_str):
+    """Safely parse JSON, handling common formatting issues."""
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"JSON parsing error: {e}")
+        
+        # Try to fix common issues
+        try:
+            # Extract just the JSON part using regex
+            import re
+            json_pattern = r'```json\s*([\s\S]*?)\s*```|```\s*([\s\S]*?)\s*```|(\{[\s\S]*\})'
+            json_match = re.search(json_pattern, json_str)
+            
+            if json_match:
+                for group in json_match.groups():
+                    if group:
+                        return json.loads(group)
+            
+            # If that didn't work, try a more aggressive approach
+            start_idx = json_str.find('{')
+            end_idx = json_str.rfind('}')
+            
+            if start_idx >= 0 and end_idx > start_idx:
+                return json.loads(json_str[start_idx:end_idx+1])
+                
+            raise ValueError("Could not extract valid JSON")
+        except Exception as inner_e:
+            print(f"Failed to recover JSON: {inner_e}")
+            raise
+
+# In initial_exploration, time_based_clustering_llm, and topology_based_clustering_llm
+# Find where you parse the JSON response:
+
+try:
+    parsed_clusters = json.loads(response_content)
+    
+    # ADD THIS NORMALIZATION CODE:
+    # Ensure alert_ids are consistently in list format
+    if "clusters" in parsed_clusters:
+        for cluster in parsed_clusters["clusters"]:
+            if "alert_ids" in cluster:
+                cluster["alert_ids"] = self._ensure_list_format(cluster["alert_ids"])
+    
+    # Ensure unassigned_alerts is in list format
+    if "unassigned_alerts" in parsed_clusters:
+        parsed_clusters["unassigned_alerts"] = self._ensure_list_format(parsed_clusters["unassigned_alerts"])
+    
+    self.current_clusters = parsed_clusters
+except Exception as e:
+    print(f"Failed to load the clusters: {e}")
