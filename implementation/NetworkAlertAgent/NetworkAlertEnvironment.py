@@ -326,6 +326,7 @@ class NetworkAlertEnvironment(gym.Env):
     def _extract_recommendation(self, response_content):
         """
         Extract the recommended next action from the LLM response.
+        Supports multiple reorganization operations.
         
         Args:
             response_content: The full text response from the LLM
@@ -333,65 +334,66 @@ class NetworkAlertEnvironment(gym.Env):
         Returns:
             str: The recommended next action
         """
-        # Look for direct recommendation markers
-        recommendation_markers = [
-            "Recommendation:", "Next Action:", "Next Step:", "Recommended Action:",
-            "I recommend", "You should", "The next step should be"
-        ]
-        
-        # First, try to find a specific action recommendation
-        action_types = ["TimeBasedClustering", "TopologyBasedClustering", "Reorganize", "Finish"]
-        
-        lines = response_content.split('\n')
-        for line in lines:
-            line = line.strip()
+        try:
+            import re
             
-            # Check if any of the action types are mentioned in this line
-            for action in action_types:
-                if action in line:
-                    # For Reorganize actions, try to extract natural language instructions
-                    if action == "Reorganize":
-                        # Special case: look for multiple operations in square brackets format
-                        reorganize_pattern = r'Reorganize\s*\[\s*([\s\S]*?)\s*\]'
-                        reorganize_match = re.search(reorganize_pattern, response_content)
+            # Look for reorganize with multiple operations in square brackets format
+            # This pattern will capture the entire content within the brackets
+            reorganize_pattern = r'Reorganize\s*\[\s*([\s\S]*?)\s*\]'
+            reorganize_match = re.search(reorganize_pattern, response_content)
+            
+            if reorganize_match:
+                # Get the entire content within the brackets
+                operations_text = reorganize_match.group(1).strip()
+                return f"Reorganize[{operations_text}]"
+            
+            # Look for standard action recommendations
+            action_types = ["TimeBasedClustering", "TopologyBasedClustering", "Reorganize", "Finish"]
+            
+            lines = response_content.split('\n')
+            for line in lines:
+                line = line.strip()
+                
+                # Check if any of the action types are mentioned in this line
+                for action in action_types:
+                    if action in line:
+                        # For Reorganize actions that don't use the new format
+                        if action == "Reorganize" and "[" in line:
+                            # Extract the content between brackets if present
+                            try:
+                                instruction_start = line.find("[") + 1
+                                instruction_end = line.rfind("]")
+                                if instruction_end > instruction_start:
+                                    instruction = line[instruction_start:instruction_end].strip()
+                                    if instruction:
+                                        return f"{action}[{instruction}]"
+                            except:
+                                pass
                         
-                        if reorganize_match:
-                            operations_text = reorganize_match.group(1).strip()
-                            return f"Reorganize[{operations_text}]"
-                        
-                        # Look for instructions after the action keyword (original behavior)
-                        try:
-                            instruction_start = line.find(action) + len(action)
-                            instruction = line[instruction_start:].strip()
-                            
-                            # If we have instructions in the same line, include them
-                            if instruction and len(instruction) > 2:  # More than just a character or two
-                                return f"{action}[{instruction}]"
-                            
-                            # If no instructions on this line, look for them in the next few lines
-                            for next_line in lines[lines.index(line)+1:lines.index(line)+5]:
-                                if next_line.strip() and not any(marker in next_line for marker in recommendation_markers):
-                                    return f"{action}[{next_line.strip()}]"
-                        except:
-                            pass
-                    
-                    # For other action types
-                    return f"{action}[]"
-        
-        # If we couldn't find a specific action recommendation, look for general recommendation text
-        for line in lines:
-            line = line.strip()
-            for marker in recommendation_markers:
-                if marker in line:
-                    # Return this line as the recommendation
-                    return line
-        
-        # Default fallback if no clear recommendation is found
-        return "No clear action recommendation found. Consider performing Reassess[] again with more detail."
-        
-        # Default fallback if no clear recommendation is found
-        return "No clear action recommendation found. Consider performing Reassess[] again with more detail."
-    
+                        # For other action types
+                        return f"{action}[]"
+            
+            # If we couldn't find a specific action recommendation, look for general recommendation text
+            recommendation_markers = [
+                "Recommendation:", "Next Action:", "Next Step:", "Recommended Action:",
+                "I recommend", "You should", "The next step should be"
+            ]
+            
+            for line in lines:
+                line = line.strip()
+                for marker in recommendation_markers:
+                    if marker in line:
+                        # Return this line as the recommendation
+                        return line
+            
+            # Default fallback
+            return "No clear action recommendation found. Consider performing Reassess[] again with more detail."
+            
+        except Exception as e:
+            # Log the error and return a default recommendation
+            print(f"Error extracting recommendation: {str(e)}")
+            return "Error extracting recommendation. Consider performing Reassess[] again."
+
     def _move_from_unassigned_to_cluster(self, alert_ids, dst_cluster_id):
         """Move alerts from unassigned to a specific cluster."""
         # Find the destination cluster
