@@ -1,847 +1,5 @@
-def _parse_and_implement_reorganize(self, response_content):
-        """
-        Parse the LLM's reorganization response and implement the specified operations.
-        
-        Args:
-            response_content: The LLM's response content
-            
-        Returns:
-            list: Description of changes made
-        """
-        changes_made = []
-        print(f"DEBUG: Parsing reorganize instructions: {response_content[:100]}...")
-        
-        # Look for common operation patterns with more flexible matching
-        # Updated patterns to be more flexible
-        move_pattern = r"(?:move|add)\s+alert[s]?\s+(\d+(?:,\s*\d+)*)\s+from\s+(\w+)\s+to\s+(\w+)"
-        merge_pattern = r"(?:merge|combine)\s+cluster[s]?\s+(\w+)(?:\s+and|\s*,\s*)\s+(\w+)"
-        # More flexible create pattern that matches various formats
-        create_pattern = r"(?:create|make|add)\s+(?:a\s+)?(?:new\s+)?cluster(?:\s+(?:with\s+id\s+|id\s+|with\s+|named\s+|called\s+)?(\w+))?(?:\s+with\s+alert[s]?\s+(\d+(?:,\s*\d+)*))?|create\s+cluster_(\d+)\s+with\s+alerts\s+(\d+(?:,\s*\d+)*)"
-        
-        # Find all move operations
-        print(f"DEBUG: Looking for move operations")
-        move_matches = re.finditer(move_pattern, response_content.lower())
-        for match in move_matches:
-            alert_ids_str, src_cluster, dst_cluster = match.groups()
-            print(f"DEBUG: Found move match: {match.group(0)}")
-            print(f"DEBUG: Alert IDs: {alert_ids_str}, From: {src_cluster}, To: {dst_cluster}")
-            
-            # Parse alert IDs
-            alert_ids = [int(aid.strip()) for aid in alert_ids_str.split(',') if aid.strip().isdigit()]
-            
-            # Normalize cluster names
-            if src_cluster.startswith("cluster_"):
-                src_cluster_id = src_cluster
-            elif src_cluster.isdigit():
-                src_cluster_id = f"cluster_{int(src_cluster):03d}"
-            else:
-                src_cluster_id = src_cluster
-                
-            if dst_cluster.startswith("cluster_"):
-                dst_cluster_id = dst_cluster
-            elif dst_cluster.isdigit():
-                dst_cluster_id = f"cluster_{int(dst_cluster):03d}"
-            else:
-                dst_cluster_id = dst_cluster
-            
-            # Implement the move
-            try:
-                if src_cluster_id == "unassigned":
-                    self._move_from_unassigned_to_cluster(alert_ids, dst_cluster_id)
-                    changes_made.append(f"Moved {len(alert_ids)} alerts from unassigned to {dst_cluster_id}")
-                elif dst_cluster_id == "unassigned":
-                    self._move_from_cluster_to_unassigned(alert_ids, src_cluster_id)
-                    changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to unassigned")
-                else:
-                    self._move_between_clusters(alert_ids, src_cluster_id, dst_cluster_id)
-                    changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to {dst_cluster_id}")
-            except Exception as e:
-                error_msg = f"Error moving alerts: {str(e)}"
-                print(f"DEBUG: {error_msg}")
-                changes_made.append(error_msg)
-        
-        # Find all merge operations
-        print(f"DEBUG: Looking for merge operations")
-        merge_matches = re.finditer(merge_pattern, response_content.lower())
-        for match in merge_matches:
-            cluster_id1, cluster_id2 = match.groups()
-            print(f"DEBUG: Found merge match: {match.group(0)}")
-            print(f"DEBUG: Clusters to merge: {cluster_id1} and {cluster_id2}")
-            
-            # Normalize cluster names
-            if cluster_id1.startswith("cluster_"):
-                cluster_id1_norm = cluster_id1
-            elif cluster_id1.isdigit():
-                cluster_id1_norm = f"cluster_{int(cluster_id1):03d}"
-            else:
-                cluster_id1_norm = cluster_id1
-                
-            if cluster_id2.startswith("cluster_"):
-                cluster_id2_norm = cluster_id2
-            elif cluster_id2.isdigit():
-                cluster_id2_norm = f"cluster_{int(cluster_id2):03d}"
-            else:
-                cluster_id2_norm = cluster_id2
-            
-            # Implement the merge
-            try:
-                self._merge_clusters([cluster_id1_norm, cluster_id2_norm])
-                changes_made.append(f"Merged clusters {cluster_id1_norm} and {cluster_id2_norm}")
-            except Exception as e:
-                error_msg = f"Error merging clusters: {str(e)}"
-                print(f"DEBUG: {error_msg}")
-                changes_made.append(error_msg)
-        
-        # Find all create operations
-        print(f"DEBUG: Looking for create operations with pattern: {create_pattern}")
-        create_matches = re.finditer(create_pattern, response_content.lower())
-        for match in move_matches:
-            print(f"DEBUG: Create match groups: {match.groups()}")
-            
-        create_operations_found = False
-        create_matches = re.finditer(create_pattern, response_content.lower())
-        for match in create_matches:
-            create_operations_found = True
-            print(f"DEBUG: Found create match: {match.group(0)}")
-            print(f"DEBUG: Match groups: {match.groups()}")
-            
-            # Extract cluster ID and alert IDs from different possible group patterns
-            groups = match.groups()
-            
-            # Handle different patterns
-            if len(groups) >= 4 and groups[2] is not None and groups[3] is not None:
-                # Pattern: create cluster_123 with alerts 1,2,3
-                cluster_id = f"cluster_{groups[2]}"
-                alert_ids_str = groups[3]
-            elif groups[0] is not None:
-                # Pattern: create a new cluster cluster_123 with alerts...
-                cluster_id = groups[0]
-                alert_ids_str = groups[1] if len(groups) > 1 and groups[1] is not None else ""
-            else:
-                # If no explicit cluster ID, generate one
-                cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
-                alert_ids_str = groups[1] if len(groups) > 1 and groups[1] is not None else ""
-            
-            # Normalize cluster ID
-            if not cluster_id.startswith("cluster_") and cluster_id.isdigit():
-                cluster_id = f"cluster_{int(cluster_id):03d}"
-                
-            # Parse alert IDs if provided
-            alert_ids = []
-            if alert_ids_str:
-                alert_ids = [int(aid.strip()) for aid in alert_ids_str.split(',') if aid.strip().isdigit()]
-            
-            print(f"DEBUG: Creating cluster {cluster_id} with {len(alert_ids)} alerts")
-            
-            # Implement the create
-            try:
-                cluster_data = {
-                    "cluster_id": cluster_id,
-                    "chains of thoughts": "Manually created cluster",
-                    "source_ids": "",
-                    "confidence": 0.5,
-                    "severity": "medium",
-                    "time": {"start": 0, "end": 0},
-                    "Description": "Manually created cluster"
-                }
-                self._create_new_cluster(alert_ids, cluster_data)
-                changes_made.append(f"Created new cluster {cluster_id} with {len(alert_ids)} alerts")
-            except Exception as e:
-                error_msg = f"Error creating cluster: {str(e)}"
-                print(f"DEBUG: {error_msg}")
-                changes_made.append(error_msg)
-        
-        # If no operations were found but there's text indicating changes
-        if not changes_made and any(op in response_content.lower() for op in ["move", "merge", "create"]):
-            print(f"DEBUG: No standard operations matched, trying fallback parsing")
-            # Try more lenient parsing as a fallback
-            fallback_changes = self._fallback_parse_reorganize(response_content)
-            changes_made.extend(fallback_changes)
-            
-        # If still no changes made, try one more direct approach for cluster creation
-        if not changes_made and "create" in response_content.lower() and "cluster" in response_content.lower():
-            print(f"DEBUG: Attempting direct cluster creation pattern matching")
-            # Special case for "Create a new cluster with alerts X, Y, Z"
-            try:
-                # Direct extraction of alert IDs
-                alert_ids = [int(num) for num in re.findall(r'\d+', response_content) 
-                             if len(str(num)) > 5]  # Assuming alert IDs are large numbers
-                
-                # Check for cluster ID specification
-                cluster_id_match = re.search(r'cluster[_\s]*(\d+)', response_content)
-                if cluster_id_match:
-                    cluster_id = f"cluster_{int(cluster_id_match.group(1)):03d}"
-                else:
-                    cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
-                
-                print(f"DEBUG: Direct creation - Cluster ID: {cluster_id}, Alert IDs: {alert_ids[:5]}...")
-                
-                # Create the cluster
-                cluster_data = {
-                    "cluster_id": cluster_id,
-                    "chains of thoughts": "Manually created cluster via direct pattern",
-                    "source_ids": "",
-                    "confidence": 0.5,
-                    "severity": "medium",
-                    "time": {"start": 0, "end": 0},
-                    "Description": "Manually created cluster"
-                }
-                self._create_new_cluster(alert_ids, cluster_data)
-                changes_made.append(f"Created new cluster {cluster_id} with {len(alert_ids)} alerts (direct method)")
-            except Exception as e:
-                error_msg = f"Error in direct cluster creation: {str(e)}"
-                print(f"DEBUG: {error_msg}")
-                changes_made.append(error_msg)
-        
-        return changes_made
-        
-    def _fallback_parse_reorganize(self, response_content):
-        """
-        Fallback parsing for reorganization when regex patterns fail to match.
-        Looks for key phrases and tries to extract operations more liberally.
-        
-        Args:
-            response_content: The LLM's response content
-            
-        Returns:
-            list: Description of changes made
-        """
-        changes_made = []
-        lines = response_content.lower().split('\n')
-        print(f"DEBUG: Running fallback parser on {len(lines)} lines")
-        
-        # Scan for specific patterns related to cluster operations across all lines
-        response_text = response_content.lower()
-        
-        # Detect cluster_id pattern
-        cluster_ids = re.findall(r'cluster[_\s]*(\d+)', response_text)
-        print(f"DEBUG: Found potential cluster IDs: {cluster_ids}")
-        
-        # Detect alert IDs - looking for 8-9 digit numbers (typical for alert IDs)
-        alert_ids_all = [int(num) for num in re.findall(r'\b\d{6,9}\b', response_text)]
-        print(f"DEBUG: Found potential alert IDs: {len(alert_ids_all)} IDs")
-        
-        # Process each line separately
-        for i, line in enumerate(lines):
-            line = line.strip()
-            print(f"DEBUG: Processing line {i}: {line[:50]}...")
-            
-            # Simple move operation
-            if "move" in line and "alert" in line and "to" in line:
-                # Extract alert IDs - look for numbers
-                alert_ids = [int(n) for n in re.findall(r'\d+', line) if 100000 <= int(n) < 1000000000]  # Typical alert ID range
-                
-                # Skip if no alert IDs found
-                if not alert_ids:
-                    continue
-                
-                print(f"DEBUG: Found move operation with alert IDs: {alert_ids}")
-                
-                # Extract cluster names - look for "cluster" or "unassigned"
-                if "unassigned" in line and "cluster" in line:
-                    # Determine direction
-                    if line.find("unassigned") < line.find("cluster"):
-                        # From unassigned to cluster
-                        cluster_matches = re.findall(r'cluster[_\s]*(\d+)', line)
-                        if cluster_matches:
-                            dst_cluster = f"cluster_{int(cluster_matches[0]):03d}"
-                            try:
-                                self._move_from_unassigned_to_cluster(alert_ids, dst_cluster)
-                                changes_made.append(f"Moved {len(alert_ids)} alerts from unassigned to {dst_cluster} (fallback)")
-                            except Exception as e:
-                                error_msg = f"Error in fallback move: {str(e)}"
-                                print(f"DEBUG: {error_msg}")
-                                changes_made.append(error_msg)
-                    else:
-                        # From cluster to unassigned
-                        cluster_matches = re.findall(r'cluster[_\s]*(\d+)', line)
-                        if cluster_matches:
-                            src_cluster = f"cluster_{int(cluster_matches[0]):03d}"
-                            try:
-                                self._move_from_cluster_to_unassigned(alert_ids, src_cluster)
-                                changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster} to unassigned (fallback)")
-                            except Exception as e:
-                                error_msg = f"Error in fallback move: {str(e)}"
-                                print(f"DEBUG: {error_msg}")
-                                changes_made.append(error_msg)
-            
-            # Simple merge operation
-            elif "merge" in line and "cluster" in line:
-                cluster_matches = re.findall(r'cluster[_\s]*(\d+)', line)
-                if len(cluster_matches) >= 2:
-                    cluster_ids = [f"cluster_{int(cid):03d}" for cid in cluster_matches[:2]]
-                    try:
-                        self._merge_clusters(cluster_ids)
-                        changes_made.append(f"Merged clusters {cluster_ids[0]} and {cluster_ids[1]} (fallback)")
-                    except Exception as e:
-                        error_msg = f"Error in fallback merge: {str(e)}"
-                        print(f"DEBUG: {error_msg}")
-                        changes_made.append(error_msg)
-            
-            # Simple create operation
-            elif "create" in line and "cluster" in line:
-                # Look for specific cluster number for new cluster
-                new_cluster_id = None
-                cluster_number_match = re.search(r'cluster[_\s]*(\d+)', line)
-                if cluster_number_match:
-                    new_cluster_id = f"cluster_{int(cluster_number_match.group(1)):03d}"
-                else:
-                    # Generate a new ID if none specified
-                    new_cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
-                
-                # Look for alert IDs in this line or next few lines
-                alert_ids = []
-                
-                # Check current line first
-                alert_ids = [int(n) for n in re.findall(r'\d+', line) if 100000 <= int(n) < 1000000000]
-                
-                # If no alert IDs on this line, check next few lines
-                if not alert_ids:
-                    search_limit = min(i + 5, len(lines))
-                    for j in range(i + 1, search_limit):
-                        next_line = lines[j].strip()
-                        if "alert" in next_line:
-                            alert_ids = [int(n) for n in re.findall(r'\d+', next_line) if 100000 <= int(n) < 1000000000]
-                            if alert_ids:
-                                break
-                
-                # If no alert IDs found after searching, look in the entire text for large numbers
-                if not alert_ids and alert_ids_all:
-                    print(f"DEBUG: No alert IDs found in nearby lines, using all alert IDs from text")
-                    alert_ids = alert_ids_all
-                
-                if new_cluster_id:
-                    try:
-                        print(f"DEBUG: Creating new cluster {new_cluster_id} with {len(alert_ids)} alerts (fallback)")
-                        cluster_data = {
-                            "cluster_id": new_cluster_id,
-                            "chains of thoughts": "Manually created cluster via fallback parser",
-                            "source_ids": "",
-                            "confidence": 0.5,
-                            "severity": "medium",
-                            "time": {"start": 0, "end": 0},
-                            "Description": "Manually created cluster"
-                        }
-                        self._create_new_cluster(alert_ids, cluster_data)
-                        changes_made.append(f"Created new cluster {new_cluster_id} with {len(alert_ids)} alerts (fallback)")
-                    except Exception as e:
-                        error_msg = f"Error in fallback cluster creation: {str(e)}"
-                        print(f"DEBUG: {error_msg}")
-                        changes_made.append(error_msg)
-        
-        # Super fallback mode - if we still haven't found any operations
-        if not changes_made:
-            print(f"DEBUG: No operations found in line-by-line parsing, attempting super fallback mode")
-            
-            # For cluster creation, if "create" and "cluster" are present anywhere
-            if "create" in response_text and "cluster" in response_text:
-                new_cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
-                
-                # If "cluster_004" or similar is specified anywhere
-                for cluster_id in cluster_ids:
-                    if int(cluster_id) > len(self.current_clusters['clusters']):
-                        new_cluster_id = f"cluster_{int(cluster_id):03d}"
-                        break
-                
-                try:
-                    print(f"DEBUG: Super fallback - creating cluster {new_cluster_id} with {len(alert_ids_all)} alerts")
-                    cluster_data = {
-                        "cluster_id": new_cluster_id,
-                        "chains of thoughts": "Manually created cluster via super fallback",
-                        "source_ids": "",
-                        "confidence": 0.5,
-                        "severity": "medium",
-                        "time": {"start": 0, "end": 0},
-                        "Description": "Manually created cluster"
-                    }
-                    self._create_new_cluster(alert_ids_all, cluster_data)
-                    changes_made.append(f"Created new cluster {new_cluster_id} with {len(alert_ids_all)} alerts (super fallback)")
-                except Exception as e:
-                    error_msg = f"Error in super fallback cluster creation: {str(e)}"
-                    print(f"DEBUG: {error_msg}")
-                    changes_made.append(error_msg)
-        
-        return changes_made    def reorganize_llm(self, instructions, recent_assessment=None, temperature=0.01):
-        """
-        Implement reorganization based on natural language instructions.
-        
-        Args:
-            instructions: Natural language instructions for reorganization
-            recent_assessment: The most recent assessment recommendation (if available)
-            temperature: Temperature for LLM sampling
-            
-        Returns:
-            tuple: (response from LLM, updated history, changes made)
-        """
-        # Get the function-specific history
-        history = self.function_histories.get("reorganize", [])
-        
-        # Validate current_clusters is a dictionary
-        if not isinstance(self.current_clusters, dict):
-            raise TypeError("current_clusters must be a dictionary")
-            
-        # Check for required keys
-        if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
-            raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
-            
-        # Prepare data for the LLM
-        try:
-            # Serialize clusters and unassigned alerts
-            clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
-            unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
-            
-            # Verify serialization
-            if not isinstance(clusters_data, str) or not isinstance(unassigned_alerts_data, str):
-                raise TypeError('The serialized data is not a string')
-        except Exception as e:
-            print(f'Error while serializing data: {e}')
-            return None, history, None
-            
-        # Create system instructions with few-shot examples
-        system_instructions = """
-        You are a network alert clustering assistant. Your task is to implement reorganization instructions for alert clusters.
-        
-        Based on the current clusters and the given instructions, you will:
-        1. Parse the reorganization instructions
-        2. Convert them to specific operations on clusters
-        3. Describe exactly what changes should be made
-        
-        Stick closely to the instructions provided, especially if they come from a recent assessment.
-        
-        EXAMPLES:
-        
-        Example 1:
-        Current clusters: [cluster_001, cluster_002]
-        Unassigned alerts: [1045, 1046]
-        Assessment recommendation: "Move alerts 1045 and 1046 from unassigned to cluster_001 since they show temporal correlation."
-        Reorganization instructions: "Move alerts 1045 and 1046 from unassigned to cluster_001."
-        
-        Operations to perform:
-        1. Move alert 1045 from unassigned to cluster_001
-        2. Move alert 1046 from unassigned to cluster_001
-        
-        Example 2:
-        Current clusters: [cluster_001, cluster_002, cluster_003]
-        Unassigned alerts: []
-        Assessment recommendation: "Merge clusters 002 and 003 as they represent the same underlying issue."
-        Reorganization instructions: "Merge clusters 002 and 003."
-        
-        Operations to perform:
-        1. Merge cluster_002 and cluster_003 (keeping cluster_002 as the base)
-        
-        Example 3:
-        Current clusters: [cluster_001]
-        Unassigned alerts: [2001, 2002, 2003]
-        Assessment recommendation: "Create a new cluster for alerts 2001 and 2002 as they represent a separate issue."
-        Reorganization instructions: "Create a new cluster with alerts 2001 and 2002."
-        
-        Operations to perform:
-        1. Create a new cluster (cluster_002)
-        2. Move alerts 2001 and 2002 from unassigned to cluster_002
-        
-        Be precise and provide a clear list of operations to perform. Don't add operations that weren't requested.
-        """
-        
-        # Add the recent assessment context if available
-        if recent_assessment:
-            recent_assessment_context = f"""
-            The most recent assessment provided the following recommendation:
-            {recent_assessment}
-            
-            Please ensure your reorganization aligns with this assessment.
-            """
-            system_instructions += recent_assessment_context
-        
-        # Create user message
-        user_message = f"""
-        CURRENT CLUSTERS:
-        {clusters_data}
-        
-        UNASSIGNED ALERTS:
-        {unassigned_alerts_data}
-        
-        REORGANIZATION INSTRUCTIONS:
-        {instructions}
-        
-        Please provide:
-        1. A clear list of operations to perform
-        2. A brief explanation of why these changes make sense
-        """
-        
-        # Prepare messages for LLM
-        messages = [
-            {"role": "system", "content": system_instructions},
-            {"role": "user", "content": user_message}
-        ]
-        
-        # Validate messages
-        for msg in messages:
-            if not isinstance(msg["content"], str):
-                raise ValueError(f"Message content is not a string: {msg['content']}")
-                
-        # Add messages to function-specific history
-        history += messages
-        self.function_histories["reorganize"] = history
-        
-        # Call the LLM
-        reply = self._llm(history, temperature=temperature, model=self.llm_model)
-        
-        # Validate response
-        if 'choices' in reply and len(reply['choices']) > 0:
-            response_content = reply['choices'][0]['message']['content']
-            history.append({"role": "assistant", "content": response_content})
-            self.function_histories["reorganize"] = history
-            
-            # Store response in recent reasoning
-            self.recent_reasoning["reorganize"] = response_content
-            
-            # Parse operations from the response and implement them
-            try:
-                changes_made = self._parse_and_implement_reorganize(response_content)
-                
-                # Create a summary for the ReAct framework
-                summary = f"Reorganization:\n- {len(changes_made)} operations performed\n"
-                for op in changes_made:
-                    summary += f"- {op}\n"
-                
-                # Add to ReAct history
-                self.react_history.append({
-                    "action": "Reorganize",
-                    "summary": summary
-                })
-                
-                return reply, history, changes_made
-            except Exception as e:
-                print(f"Error implementing reorganization: {e}")
-                return reply, history, ["Error implementing changes: " + str(e)]
-        else:
-            print("Invalid response from LLM")
-            return None, history, None    def assess_llm(self, temperature=0.01):
-        """
-        Assess the current clustering state and provide recommendations for next steps.
-        
-        This function evaluates the current clusters and unassigned alerts, then provides
-        guidance on whether to:
-        1. Perform additional time-based clustering
-        2. Perform additional topology-based clustering
-        3. Directly reorganize specific alerts/clusters
-        4. Finish the aggregation process
-        
-        Returns:
-            tuple: (response from LLM, updated history)
-        """
-        # Get the function-specific history
-        history = self.function_histories.get("assess", [])
-        
-        # Validate current_clusters
-        if not isinstance(self.current_clusters, dict):
-            raise TypeError("current_clusters must be a dictionary")
-            
-        # Check for required keys
-        if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
-            raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
-            
-        # Prepare data for the LLM
-        try:
-            # Serialize clusters and unassigned alerts
-            clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
-            unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
-            current_alerts_batch_str = json.dumps(self.current_alerts_batch)
-            topology_info_str = json.dumps(self.topology_info, separators=(',', ': '), indent=1)
-            
-            # Verify serialization
-            if not all(isinstance(x, str) for x in [clusters_data, unassigned_alerts_data, current_alerts_batch_str, topology_info_str]):
-                raise TypeError('The serialized data is not a string')
-        except Exception as e:
-            print(f'Error while serializing data: {e}')
-            return None, history
-            
-        # Get previous clustering summaries for context
-        clustering_context = self._get_clustering_summaries()
-        
-        # Create system instructions - avoid nested f-strings by using concatenation
-        system_instructions = """
-        You are an advanced network alert assessment system. Your task is to evaluate the current state of alert clusters
-        and provide specific recommendations for next steps in the aggregation process.
-        
-        Previous clustering steps have provided the following insights:
-        """ + clustering_context + """
-        
-        Examine the current clusters closely, focusing on:
-        1. Cluster quality - Are alerts appropriately grouped based on time and topology?
-        2. Unassigned alerts - Could any be included in existing clusters?
-        3. Potential merges - Are there clusters that should be combined?
-        4. Confidence levels - Are they appropriate based on evidence?
-        
-        After your assessment, provide a clear recommendation for the NEXT ACTION to take, choosing from:
-        1. TimeBasedClustering - If time-based relationships need further refinement
-        2. TopologyBasedClustering - If network topology relationships need further consideration
-        3. DirectReorganize - If specific alerts need to be manually moved or clusters merged
-           Include exact parameters for this action if recommended
-        4. Finish - If clusters appear complete and well-formed
-        
-        If recommending DirectReorganize, provide precise JSON parameters in the format:
-        {"move_alerts": [{"from_cluster": "cluster_id", "to_cluster": "cluster_id", "alert_ids": [ids]}], 
-         "merge_clusters": ["cluster_id1", "cluster_id2"], 
-         "create_cluster": {"alert_ids": [ids], "cluster_data": {}}
-        }
-        
-        Be decisive - prioritize providing a single clear recommendation based on your comprehensive assessment.
-        """
-        
-        # Create user message
-        user_message = f"""
-        Please assess the current state of alert clusters and provide a recommendation for the next step.
-        
-        CURRENT ALERT BATCH:
-        {current_alerts_batch_str}
-        
-        CURRENT CLUSTERS:
-        {clusters_data}
-        
-        UNASSIGNED ALERTS:
-        {unassigned_alerts_data}
-        
-        TOPOLOGY INFORMATION:
-        {topology_info_str}
-        
-        Please provide:
-        1. A detailed assessment of the current clusters
-        2. Analysis of any issues or opportunities for improvement
-        3. A specific recommendation for the next action to take (TimeBasedClustering, TopologyBasedClustering, DirectReorganize with parameters, or Finish)
-        """
-        
-        # Prepare messages for LLM
-        messages = [
-            {"role": "system", "content": system_instructions},
-            {"role": "user", "content": user_message}
-        ]
-        
-        # Validate messages
-        for msg in messages:
-            if not isinstance(msg["content"], str):
-                raise ValueError(f"Message content is not a string: {msg['content']}")
-                
-        # Add messages to function-specific history
-        history += messages
-        self.function_histories["assess"] = history
-        
-        # For demonstration purposes, mock the LLM call
-        # In your actual implementation, you would call your LLM
-        # reply = self._llm(history, temperature=temperature, model=self.llm_model)
-        
-        # Mock reply for demonstration
-        reply = {
-            "choices": [
-                {
-                    "message": {
-                        "content": """
-                        # Assessment of Current Clusters
-                        
-                        The current clustering appears to have effectively grouped related alerts based on both temporal and topological relationships. 
-                        
-                        ## Cluster Analysis:
-                        - Cluster cluster_001 shows strong cohesion with high confidence (0.85)
-                        - Time ranges are appropriately bounded within the 15-minute constraint
-                        - Topology connections between devices in clusters are valid
-                        
-                        ## Issues and Opportunities:
-                        1. There are still 2 unassigned alerts (IDs: 4, 5) that could potentially be incorporated
-                        2. The unassigned alerts appear to have minimal topological connection to existing clusters
-                        
-                        # Recommendation
-                        
-                        Based on the analysis, I recommend:
-                        
-                        DirectReorganize[{"move_alerts": [{"from_cluster": "unassigned", "to_cluster": "cluster_001", "alert_ids": [4]}], "create_cluster": {"alert_ids": [5], "cluster_data": {"cluster_id": "cluster_002", "confidence": 0.5, "Description": "New cluster from remaining unassigned alert"}}}]
-                        
-                        This will incorporate alert 4 into the existing cluster where it has some temporal overlap, and create a new cluster for alert 5 which appears distinct.
-                        """
-                    }
-                }
-            ]
-        }
-        
-        # Validate response
-        if 'choices' in reply and len(reply['choices']) > 0:
-            response_content = reply['choices'][0]['message']['content']
-            history.append({"role": "assistant", "content": response_content})
-            self.function_histories["assess"] = history
-            
-            # Store response in recent reasoning
-            self.recent_reasoning["assess"] = response_content
-            
-            # Create a summary for the ReAct framework
-            summary = f"Assessment:\n- Evaluated {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts\n"
-            
-            # Extract recommendation
-            recommendation = self._extract_recommendation(response_content)
-            summary += f"- Recommended: {recommendation}\n"
-            
-            # Add to ReAct history
-            self.react_history.append({
-                "action": "Reassess",
-                "summary": summary
-            })
-            
-            return reply, history
-            
-        else:
-            print("Invalid response from LLM")
-            return None, history    def topology_based_clustering_llm(self, temperature=0.01):
-        """
-        Perform topology-based clustering on the current batch of alerts.
-        Uses a dedicated history for this function and creates a summary for the ReAct framework.
-        """
-        # Get the function-specific history
-        history = self.function_histories.get("topology_based_clustering", [])
-        
-        # Ensure current_clusters is a dictionary
-        if not isinstance(self.current_clusters, dict):
-            raise TypeError("current_clusters must be a dictionary")
-            
-        # Ensure topology_info is a dictionary
-        if not isinstance(self.topology_info, dict):
-            raise TypeError("topology_info must be a dictionary")
-
-        # Check for required keys
-        if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
-            raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
-
-        # Serialize the data
-        try:
-            # Prepare cluster data and unassigned alerts
-            clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
-            unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
-            topology_info_str = json.dumps(self.topology_info, separators=(',', ': '), indent=1)
-            current_alerts_batch_str = json.dumps(self.current_alerts_batch)
-
-            # Check that the serialized data is a string
-            if not isinstance(clusters_data, str) or not isinstance(unassigned_alerts_data, str) or not isinstance(topology_info_str, str) or not isinstance(current_alerts_batch_str, str):
-                raise TypeError('The serialized data is not a string')
-        except Exception as e:
-            print(f'Error while serializing data: {e}')
-            return None
-        
-        # Gather context from previous clustering steps
-        previous_reasoning = ""
-        if self.recent_reasoning["time_based_clustering"]:
-            previous_reasoning += f"Time-based clustering reasoning:\n{self.recent_reasoning['time_based_clustering'][:300]}\n\n"
-        if self.recent_reasoning["initial_exploration"]:
-            previous_reasoning += f"Initial exploration reasoning:\n{self.recent_reasoning['initial_exploration'][:300]}"
-        
-        # Build the system instructions for the LLM - using string concatenation to avoid nested f-strings
-        system_instructions = """
-        You are the 'topology-and-dependency-based clustering' function in an alert aggregation system.
-        
-        This is the topology data description:
-        """ + topology_info_str + """
-        
-        Previous clustering reasoning:
-        """ + previous_reasoning + """
-        
-        [Your topology_based_clustering_instruction_prompt here]
-        
-        Please produce a detailed chain-of-thought that explains your reasoning, including any uncertainties and alternative approaches you considered.
-        
-        *** Before you finalize and return your result, please review the result once more with the clustering guide line and logic.
-        """
-        
-        user_message_text = f"""
-        This is complete batch of alerts during current time window:
-        
-        {current_alerts_batch_str}
-        
-        This is the current cluster in JSON format:
-        
-        {clusters_data}
-        
-        And here are the list of alert_ids of unassigned alerts that are currently not in any cluster (only the alert_ids are store, you can use the alert_id to retrieve the full alert info from current alerts batch):
-        
-        {unassigned_alerts_data}
-        
-        JSON output format:
-        
-        [Your clustering_output_json_format here]
-        
-        Please think through the problem step by step. Identify any uncertainty and unclearity.
-        """
-
-        messages = [
-            {"role": "system", "content": system_instructions},
-            {"role": "user", "content": user_message_text}
-        ]
-
-        # Validate message content
-        for msg in messages:
-            msg_content = msg['content']
-            if not isinstance(msg_content, str):
-                raise ValueError(f'This content is not str: {msg_content}')
-        
-        # Append messages to the function-specific history
-        history += messages
-        self.function_histories["topology_based_clustering"] = history
-        
-        # For demonstration purposes, mock the LLM call
-        # In your actual implementation, you would call your LLM
-        # reply = self._llm(history, response_format={"type": "json_object"}, temperature=temperature, model=self.llm_model)
-        
-        # Mock reply for demonstration
-        reply = {
-            "choices": [
-                {
-                    "message": {
-                        "content": json.dumps({
-                            "clusters": [
-                                {
-                                    "cluster_id": "cluster_001",
-                                    "chains of thoughts": "Topology-based clustering thought process",
-                                    "source_ids": "device1, device2",
-                                    "alert_ids": [1, 2, 3],
-                                    "severity": "high",
-                                    "time": {"start": 1741041666, "end": 1741045666},
-                                    "confidence": 0.85,
-                                    "Description": "Topology-based refined cluster description"
-                                }
-                            ],
-                            "unassigned_alerts": [4, 5]
-                        })
-                    }
-                }
-            ]
-        }
-
-        # Check for the response validity
-        if 'choices' in reply and len(reply['choices']) > 0:
-            response_content = reply['choices'][0]['message']['content']
-            history.append({"role": "assistant", "content": response_content})
-            self.function_histories["topology_based_clustering"] = history
-            
-            # Store response in recent reasoning
-            self.recent_reasoning["topology_based_clustering"] = response_content
-            
-            # Parse clusters from response
-            try:
-                self.current_clusters = json.loads(response_content)
-            except Exception as e:
-                print(f"Failed to load the clusters: {e}")
-                
-            # Create a summary for the ReAct framework
-            summary = self._create_clustering_summary(
-                "topology_based_clustering", 
-                self.current_clusters,
-                response_content
-            )
-            
-            # Add to ReAct history
-            self.react_history.append({
-                "action": "TopologyBasedClustering",
-                "summary": summary
-            })
-        else:
-            print("Invalid response from API")
-
-        return replyimport json
+import json
+import re
 from typing import List, Dict, Any, Tuple, Union
 import gym
 from gym import spaces
@@ -871,7 +29,8 @@ class NetworkAlertEnvironment(gym.Env):
             "initial_exploration": [],
             "time_based_clustering": [],
             "topology_based_clustering": [],
-            "assess": []
+            "assess": [],
+            "reorganize": []
         }
         self.react_history = []       # Summarized history for the ReAct framework
         
@@ -880,7 +39,8 @@ class NetworkAlertEnvironment(gym.Env):
             "initial_exploration": "",
             "time_based_clustering": "",
             "topology_based_clustering": "",
-            "assess": ""
+            "assess": "",
+            "reorganize": ""
         }
         
         # Define action space - using string commands for the ReAct framework
@@ -895,7 +55,7 @@ class NetworkAlertEnvironment(gym.Env):
             1: "TimeBasedClustering",
             2: "TopologyBasedClustering",
             3: "Reassess",
-            4: "DirectReorganize",
+            4: "Reorganize",
             5: "Finish"
         }
         
@@ -1205,7 +365,7 @@ class NetworkAlertEnvironment(gym.Env):
         ]
         
         # First, try to find a specific action recommendation
-        action_types = ["TimeBasedClustering", "TopologyBasedClustering", "DirectReorganize", "Finish"]
+        action_types = ["TimeBasedClustering", "TopologyBasedClustering", "Reorganize", "Finish"]
         
         lines = response_content.split('\n')
         for line in lines:
@@ -1214,32 +374,23 @@ class NetworkAlertEnvironment(gym.Env):
             # Check if any of the action types are mentioned in this line
             for action in action_types:
                 if action in line:
-                    # If this is a DirectReorganize action with parameters, try to extract them
-                    if action == "DirectReorganize" and ("{" in line or "{" in response_content):
-                        # Try to extract the JSON parameters
+                    # For Reorganize actions, try to extract natural language instructions
+                    if action == "Reorganize":
+                        # Look for instructions after the action keyword
                         try:
-                            # Find the start of the JSON object
-                            json_start = response_content.find('{')
-                            if json_start != -1:
-                                # Extract from this point to the end and try to parse it
-                                json_text = response_content[json_start:]
-                                # Balance the brackets to find the end of the JSON
-                                bracket_count = 0
-                                for i, char in enumerate(json_text):
-                                    if char == '{':
-                                        bracket_count += 1
-                                    elif char == '}':
-                                        bracket_count -= 1
-                                        if bracket_count == 0:
-                                            json_text = json_text[:i+1]
-                                            break
-                                
-                                # Try to parse the JSON to validate it
-                                params = json.loads(json_text)
-                                return f"DirectReorganize[{json_text}]"
+                            instruction_start = line.find(action) + len(action)
+                            instruction = line[instruction_start:].strip()
+                            
+                            # If we have instructions in the same line, include them
+                            if instruction and len(instruction) > 2:  # More than just a character or two
+                                return f"{action}[{instruction}]"
+                            
+                            # If no instructions on this line, look for them in the next few lines
+                            for next_line in lines[lines.index(line)+1:lines.index(line)+5]:
+                                if next_line.strip() and not any(marker in next_line for marker in recommendation_markers):
+                                    return f"{action}[{next_line.strip()}]"
                         except:
-                            # If we can't parse the JSON, just return the action type
-                            return f"{action}[]"
+                            pass
                     
                     # For other action types
                     return f"{action}[]"
@@ -1255,39 +406,8 @@ class NetworkAlertEnvironment(gym.Env):
         # Default fallback if no clear recommendation is found
         return "No clear action recommendation found. Consider performing Reassess[] again with more detail."
     
-    def _direct_reorganize(self, params):
-        """
-        Manually reorganize clusters based on provided parameters.
-        
-        Args:
-            params: Dictionary with reorganization instructions
-        """
-        if "move_alerts" in params:
-            for move in params["move_alerts"]:
-                src_cluster = move.get("from_cluster")
-                dst_cluster = move.get("to_cluster")
-                alert_ids = move.get("alert_ids", [])
-                
-                # Move alerts from unassigned to a cluster
-                if src_cluster == "unassigned" and dst_cluster != "unassigned":
-                    self._move_from_unassigned_to_cluster(alert_ids, dst_cluster)
-                
-                # Move alerts from a cluster to unassigned
-                elif src_cluster != "unassigned" and dst_cluster == "unassigned":
-                    self._move_from_cluster_to_unassigned(alert_ids, src_cluster)
-                
-                # Move alerts from one cluster to another
-                elif src_cluster != "unassigned" and dst_cluster != "unassigned":
-                    self._move_between_clusters(alert_ids, src_cluster, dst_cluster)
-        
-        if "merge_clusters" in params:
-            cluster_ids = params["merge_clusters"]
-            self._merge_clusters(cluster_ids)
-        
-        if "create_cluster" in params:
-            alert_ids = params["create_cluster"].get("alert_ids", [])
-            cluster_data = params["create_cluster"].get("cluster_data", {})
-            self._create_new_cluster(alert_ids, cluster_data)
+    # Removing the _direct_reorganize method since it's no longer needed
+
     
     def _move_from_unassigned_to_cluster(self, alert_ids, dst_cluster_id):
         """Move alerts from unassigned to a specific cluster."""
@@ -1742,3 +862,858 @@ class NetworkAlertEnvironment(gym.Env):
             print("Invalid response from API")
 
         return reply
+    
+    def topology_based_clustering_llm(self, temperature=0.01):
+        """
+        Perform topology-based clustering on the current batch of alerts.
+        Uses a dedicated history for this function and creates a summary for the ReAct framework.
+        """
+        # Get the function-specific history
+        history = self.function_histories.get("topology_based_clustering", [])
+        
+        # Ensure current_clusters is a dictionary
+        if not isinstance(self.current_clusters, dict):
+            raise TypeError("current_clusters must be a dictionary")
+            
+        # Ensure topology_info is a dictionary
+        if not isinstance(self.topology_info, dict):
+            raise TypeError("topology_info must be a dictionary")
+
+        # Check for required keys
+        if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
+            raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
+
+        # Serialize the data
+        try:
+            # Prepare cluster data and unassigned alerts
+            clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
+            unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
+            topology_info_str = json.dumps(self.topology_info, separators=(',', ': '), indent=1)
+            current_alerts_batch_str = json.dumps(self.current_alerts_batch)
+
+            # Check that the serialized data is a string
+            if not isinstance(clusters_data, str) or not isinstance(unassigned_alerts_data, str) or not isinstance(topology_info_str, str) or not isinstance(current_alerts_batch_str, str):
+                raise TypeError('The serialized data is not a string')
+        except Exception as e:
+            print(f'Error while serializing data: {e}')
+            return None
+        
+        # Gather context from previous clustering steps
+        previous_reasoning = ""
+        if self.recent_reasoning["time_based_clustering"]:
+            previous_reasoning += f"Time-based clustering reasoning:\n{self.recent_reasoning['time_based_clustering'][:300]}\n\n"
+        if self.recent_reasoning["initial_exploration"]:
+            previous_reasoning += f"Initial exploration reasoning:\n{self.recent_reasoning['initial_exploration'][:300]}"
+        
+        # Build the system instructions for the LLM - using string concatenation to avoid nested f-strings
+        system_instructions = """
+        You are the 'topology-and-dependency-based clustering' function in an alert aggregation system.
+        
+        This is the topology data description:
+        """ + topology_info_str + """
+        
+        Previous clustering reasoning:
+        """ + previous_reasoning + """
+        
+        [Your topology_based_clustering_instruction_prompt here]
+        
+        Please produce a detailed chain-of-thought that explains your reasoning, including any uncertainties and alternative approaches you considered.
+        
+        *** Before you finalize and return your result, please review the result once more with the clustering guide line and logic.
+        """
+        
+        user_message_text = f"""
+        This is complete batch of alerts during current time window:
+        
+        {current_alerts_batch_str}
+        
+        This is the current cluster in JSON format:
+        
+        {clusters_data}
+        
+        And here are the list of alert_ids of unassigned alerts that are currently not in any cluster (only the alert_ids are store, you can use the alert_id to retrieve the full alert info from current alerts batch):
+        
+        {unassigned_alerts_data}
+        
+        JSON output format:
+        
+        [Your clustering_output_json_format here]
+        
+        Please think through the problem step by step. Identify any uncertainty and unclearity.
+        """
+
+        messages = [
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": user_message_text}
+        ]
+
+        # Validate message content
+        for msg in messages:
+            msg_content = msg['content']
+            if not isinstance(msg_content, str):
+                raise ValueError(f'This content is not str: {msg_content}')
+        
+        # Append messages to the function-specific history
+        history += messages
+        self.function_histories["topology_based_clustering"] = history
+        
+        # For demonstration purposes, mock the LLM call
+        # In your actual implementation, you would call your LLM
+        # reply = self._llm(history, response_format={"type": "json_object"}, temperature=temperature, model=self.llm_model)
+        
+        # Mock reply for demonstration
+        reply = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({
+                            "clusters": [
+                                {
+                                    "cluster_id": "cluster_001",
+                                    "chains of thoughts": "Topology-based clustering thought process",
+                                    "source_ids": "device1, device2",
+                                    "alert_ids": [1, 2, 3],
+                                    "severity": "high",
+                                    "time": {"start": 1741041666, "end": 1741045666},
+                                    "confidence": 0.85,
+                                    "Description": "Topology-based refined cluster description"
+                                }
+                            ],
+                            "unassigned_alerts": [4, 5]
+                        })
+                    }
+                }
+            ]
+        }
+
+        # Check for the response validity
+        if 'choices' in reply and len(reply['choices']) > 0:
+            response_content = reply['choices'][0]['message']['content']
+            history.append({"role": "assistant", "content": response_content})
+            self.function_histories["topology_based_clustering"] = history
+            
+            # Store response in recent reasoning
+            self.recent_reasoning["topology_based_clustering"] = response_content
+            
+            # Parse clusters from response
+            try:
+                self.current_clusters = json.loads(response_content)
+            except Exception as e:
+                print(f"Failed to load the clusters: {e}")
+                
+            # Create a summary for the ReAct framework
+            summary = self._create_clustering_summary(
+                "topology_based_clustering", 
+                self.current_clusters,
+                response_content
+            )
+            
+            # Add to ReAct history
+            self.react_history.append({
+                "action": "TopologyBasedClustering",
+                "summary": summary
+            })
+        else:
+            print("Invalid response from API")
+
+        return reply
+    
+    def assess_llm(self, temperature=0.01):
+        """
+        Assess the current clustering state and provide recommendations for next steps.
+        
+        This function evaluates the current clusters and unassigned alerts, then provides
+        guidance on whether to:
+        1. Perform additional time-based clustering
+        2. Perform additional topology-based clustering
+        3. Directly reorganize specific alerts/clusters
+        4. Finish the aggregation process
+        
+        Returns:
+            tuple: (response from LLM, updated history)
+        """
+        # Get the function-specific history
+        history = self.function_histories.get("assess", [])
+        
+        # Validate current_clusters
+        if not isinstance(self.current_clusters, dict):
+            raise TypeError("current_clusters must be a dictionary")
+            
+        # Check for required keys
+        if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
+            raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
+            
+        # Prepare data for the LLM
+        try:
+            # Serialize clusters and unassigned alerts
+            clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
+            unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
+            current_alerts_batch_str = json.dumps(self.current_alerts_batch)
+            topology_info_str = json.dumps(self.topology_info, separators=(',', ': '), indent=1)
+            
+            # Verify serialization
+            if not all(isinstance(x, str) for x in [clusters_data, unassigned_alerts_data, current_alerts_batch_str, topology_info_str]):
+                raise TypeError('The serialized data is not a string')
+        except Exception as e:
+            print(f'Error while serializing data: {e}')
+            return None, history
+            
+        # Get previous clustering summaries for context
+        clustering_context = self._get_clustering_summaries()
+        
+        # Create system instructions - avoid nested f-strings by using concatenation
+        system_instructions = """
+        You are an advanced network alert assessment system. Your task is to evaluate the current state of alert clusters
+        and provide specific recommendations for next steps in the aggregation process.
+        
+        Previous clustering steps have provided the following insights:
+        """ + clustering_context + """
+        
+        Examine the current clusters closely, focusing on:
+        1. Cluster quality - Are alerts appropriately grouped based on time and topology?
+        2. Unassigned alerts - Could any be included in existing clusters?
+        3. Potential merges - Are there clusters that should be combined?
+        4. Confidence levels - Are they appropriate based on evidence?
+        
+        After your assessment, provide a clear recommendation for the NEXT ACTION to take, choosing from:
+        1. TimeBasedClustering - If time-based relationships need further refinement
+        2. TopologyBasedClustering - If network topology relationships need further consideration
+        3. Reorganize - If specific alerts need to be manually moved or clusters merged
+           Include detailed natural language instructions for reorganization if recommended
+        4. Finish - If clusters appear complete and well-formed
+        
+        If recommending Reorganize, provide clear specific instructions like:
+        "Move alerts 1045 and 1046 from unassigned to cluster_001."
+        "Create a new cluster with alerts 2001, 2002, and 2003."
+        "Merge clusters cluster_002 and cluster_003."
+        
+        Be decisive - prioritize providing a single clear recommendation based on your comprehensive assessment.
+        """
+        
+        # Create user message
+        user_message = f"""
+        Please assess the current state of alert clusters and provide a recommendation for the next step.
+        
+        CURRENT ALERT BATCH:
+        {current_alerts_batch_str}
+        
+        CURRENT CLUSTERS:
+        {clusters_data}
+        
+        UNASSIGNED ALERTS:
+        {unassigned_alerts_data}
+        
+        TOPOLOGY INFORMATION:
+        {topology_info_str}
+        
+        Please provide:
+        1. A detailed assessment of the current clusters
+        2. Analysis of any issues or opportunities for improvement
+        3. A specific recommendation for the next action to take (TimeBasedClustering, TopologyBasedClustering, Reorganize with detailed instructions, or Finish)
+        """
+        
+        # Prepare messages for LLM
+        messages = [
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": user_message}
+        ]
+        
+        # Validate messages
+        for msg in messages:
+            if not isinstance(msg["content"], str):
+                raise ValueError(f"Message content is not a string: {msg['content']}")
+                
+        # Add messages to function-specific history
+        history += messages
+        self.function_histories["assess"] = history
+        
+        # Call the LLM - in a real implementation, you would use your actual LLM service
+        reply = self._llm(history, temperature=temperature, model=self.llm_model)
+        
+        # Validate response
+        if 'choices' in reply and len(reply['choices']) > 0:
+            response_content = reply['choices'][0]['message']['content']
+            history.append({"role": "assistant", "content": response_content})
+            self.function_histories["assess"] = history
+            
+            # Store response in recent reasoning
+            self.recent_reasoning["assess"] = response_content
+            
+            # Create a summary for the ReAct framework
+            summary = f"Assessment:\n- Evaluated {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts\n"
+            
+            # Extract recommendation
+            recommendation = self._extract_recommendation(response_content)
+            summary += f"- Recommended: {recommendation}\n"
+            
+            # Add to ReAct history
+            self.react_history.append({
+                "action": "Reassess",
+                "summary": summary
+            })
+            
+            return reply, history
+            
+        else:
+            print("Invalid response from LLM")
+            return None, history
+            
+    def reorganize_llm(self, instructions, recent_assessment=None, temperature=0.01):
+        """
+        Implement reorganization based on natural language instructions.
+        
+        Args:
+            instructions: Natural language instructions for reorganization
+            recent_assessment: The most recent assessment recommendation (if available)
+            temperature: Temperature for LLM sampling
+            
+        Returns:
+            tuple: (response from LLM, updated history, changes made)
+        """
+        # Get the function-specific history
+        history = self.function_histories.get("reorganize", [])
+        
+        # Validate current_clusters is a dictionary
+        if not isinstance(self.current_clusters, dict):
+            raise TypeError("current_clusters must be a dictionary")
+            
+        # Check for required keys
+        if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
+            raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
+            
+        # Prepare data for the LLM
+        try:
+            # Serialize clusters and unassigned alerts
+            clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
+            unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
+            
+            # Verify serialization
+            if not isinstance(clusters_data, str) or not isinstance(unassigned_alerts_data, str):
+                raise TypeError('The serialized data is not a string')
+        except Exception as e:
+            print(f'Error while serializing data: {e}')
+            return None, history, None
+            
+        # Create system instructions with few-shot examples
+        system_instructions = """
+        You are a network alert clustering assistant. Your task is to implement reorganization instructions for alert clusters.
+        
+        Based on the current clusters and the given instructions, you will:
+        1. Parse the reorganization instructions
+        2. Convert them to specific operations on clusters
+        3. Describe exactly what changes should be made
+        
+        Stick closely to the instructions provided, especially if they come from a recent assessment.
+        
+        EXAMPLES:
+        
+        Example 1:
+        Current clusters: [cluster_001, cluster_002]
+        Unassigned alerts: [1045, 1046]
+        Assessment recommendation: "Move alerts 1045 and 1046 from unassigned to cluster_001 since they show temporal correlation."
+        Reorganization instructions: "Move alerts 1045 and 1046 from unassigned to cluster_001."
+        
+        Operations to perform:
+        1. Move alert 1045 from unassigned to cluster_001
+        2. Move alert 1046 from unassigned to cluster_001
+        
+        Example 2:
+        Current clusters: [cluster_001, cluster_002, cluster_003]
+        Unassigned alerts: []
+        Assessment recommendation: "Merge clusters 002 and 003 as they represent the same underlying issue."
+        Reorganization instructions: "Merge clusters 002 and 003."
+        
+        Operations to perform:
+        1. Merge cluster_002 and cluster_003 (keeping cluster_002 as the base)
+        
+        Example 3:
+        Current clusters: [cluster_001]
+        Unassigned alerts: [2001, 2002, 2003]
+        Assessment recommendation: "Create a new cluster for alerts 2001 and 2002 as they represent a separate issue."
+        Reorganization instructions: "Create a new cluster with alerts 2001 and 2002."
+        
+        Operations to perform:
+        1. Create a new cluster (cluster_002)
+        2. Move alerts 2001 and 2002 from unassigned to cluster_002
+        
+        Be precise and provide a clear list of operations to perform. Don't add operations that weren't requested.
+        """
+        
+        # Add the recent assessment context if available
+        if recent_assessment:
+            recent_assessment_context = f"""
+            The most recent assessment provided the following recommendation:
+            {recent_assessment}
+            
+            Please ensure your reorganization aligns with this assessment.
+            """
+            system_instructions += recent_assessment_context
+        
+        # Create user message
+        user_message = f"""
+        CURRENT CLUSTERS:
+        {clusters_data}
+        
+        UNASSIGNED ALERTS:
+        {unassigned_alerts_data}
+        
+        REORGANIZATION INSTRUCTIONS:
+        {instructions}
+        
+        Please provide:
+        1. A clear list of operations to perform
+        2. A brief explanation of why these changes make sense
+        """
+        
+        # Prepare messages for LLM
+        messages = [
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": user_message}
+        ]
+        
+        # Validate messages
+        for msg in messages:
+            if not isinstance(msg["content"], str):
+                raise ValueError(f"Message content is not a string: {msg['content']}")
+                
+        # Add messages to function-specific history
+        history += messages
+        self.function_histories["reorganize"] = history
+        
+        # Call the LLM
+        reply = self._llm(history, temperature=temperature, model=self.llm_model)
+        
+        # Validate response
+        if 'choices' in reply and len(reply['choices']) > 0:
+            response_content = reply['choices'][0]['message']['content']
+            history.append({"role": "assistant", "content": response_content})
+            self.function_histories["reorganize"] = history
+            
+            # Store response in recent reasoning
+            self.recent_reasoning["reorganize"] = response_content
+            
+            # Parse operations from the response and implement them
+            try:
+                changes_made = self._parse_and_implement_reorganize(response_content)
+                
+                # Create a summary for the ReAct framework
+                summary = f"Reorganization:\n- {len(changes_made)} operations performed\n"
+                for op in changes_made:
+                    summary += f"- {op}\n"
+                
+                # Add to ReAct history
+                self.react_history.append({
+                    "action": "Reorganize",
+                    "summary": summary
+                })
+                
+                return reply, history, changes_made
+            except Exception as e:
+                print(f"Error implementing reorganization: {e}")
+                return reply, history, ["Error implementing changes: " + str(e)]
+        else:
+            print("Invalid response from LLM")
+            return None, history, None
+    
+    def _parse_and_implement_reorganize(self, response_content):
+        """
+        Parse the LLM's reorganization response and implement the specified operations.
+        
+        Args:
+            response_content: The LLM's response content
+            
+        Returns:
+            list: Description of changes made
+        """
+        changes_made = []
+        print(f"DEBUG: Parsing reorganize instructions: {response_content[:100]}...")
+        
+        # First, try to identify and execute cluster creation operations before other operations
+        # since some operations might depend on newly created clusters
+        
+        # Pattern for creating clusters - more flexible pattern that matches various formats
+        create_pattern = r"(?:create|make|add)\s+(?:a\s+)?(?:new\s+)?cluster(?:\s+(?:with\s+id\s+|id\s+|with\s+|named\s+|called\s+)?(\w+))?(?:\s+with\s+alert[s]?\s+(\d+(?:,\s*\d+)*))?|create\s+cluster_(\d+)\s+with\s+alerts\s+(\d+(?:,\s*\d+)*)"
+        
+        # Look for "cluster_NNN" pattern to identify specific cluster IDs
+        cluster_id_pattern = r"cluster[_\s]*(\d+)"
+        
+        # First, handle cluster creation operations to ensure they exist before moving alerts
+        create_operations_found = False
+        create_matches = re.finditer(create_pattern, response_content.lower())
+        
+        for match in create_matches:
+            create_operations_found = True
+            print(f"DEBUG: Found create match: {match.group(0)}")
+            print(f"DEBUG: Match groups: {match.groups()}")
+            
+            # Extract cluster ID and alert IDs from different possible group patterns
+            groups = match.groups()
+            
+            # Look for explicit cluster ID
+            cluster_id = None
+            
+            # Check if a cluster ID is specified in the match groups
+            if len(groups) >= 4 and groups[2] is not None:
+                # Pattern: create cluster_123 with alerts 1,2,3
+                cluster_id = f"cluster_{groups[2]}"
+            elif groups[0] is not None:
+                # Pattern: create a new cluster cluster_123 with alerts...
+                cluster_id = groups[0]
+            
+            # If no explicit cluster ID found in the match, check for cluster ID pattern in context
+            if not cluster_id:
+                # Look for "cluster_NNN" pattern anywhere in this create command
+                create_text = match.group(0)
+                cluster_id_match = re.search(cluster_id_pattern, create_text)
+                if cluster_id_match:
+                    cluster_num = cluster_id_match.group(1)
+                    cluster_id = f"cluster_{int(cluster_num):03d}"
+            
+            # If still no cluster ID, generate one
+            if not cluster_id:
+                cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
+            
+            # Normalize cluster ID
+            if not cluster_id.startswith("cluster_") and cluster_id.isdigit():
+                cluster_id = f"cluster_{int(cluster_id):03d}"
+                
+            # Extract alert IDs if provided in the match
+            alert_ids_str = ""
+            if len(groups) > 1 and groups[1] is not None:
+                alert_ids_str = groups[1]
+            elif len(groups) > 3 and groups[3] is not None:
+                alert_ids_str = groups[3]
+            
+            # If no alert IDs extracted from match groups, try to find them in context
+            if not alert_ids_str:
+                # Find alert IDs in this sentence or nearby
+                create_context = response_content[max(0, match.start() - 100):min(len(response_content), match.end() + 100)]
+                alert_ids_pattern = r"alert[s]?\s+(\d+(?:,\s*\d+)*)"
+                alert_match = re.search(alert_ids_pattern, create_context.lower())
+                if alert_match:
+                    alert_ids_str = alert_match.group(1)
+            
+            # Parse alert IDs if provided
+            alert_ids = []
+            if alert_ids_str:
+                # Parse comma-separated numbers, handling potential spaces
+                alert_ids = [int(aid.strip()) for aid in re.findall(r'\d+', alert_ids_str)]
+            
+            # If no alert IDs were found, look for numbers that appear to be alert IDs
+            if not alert_ids:
+                # Look for numbers with 6+ digits that could be alert IDs
+                potential_alert_ids = [int(num) for num in re.findall(r'\b\d{6,}\b', create_context)]
+                if potential_alert_ids:
+                    alert_ids = potential_alert_ids
+            
+            print(f"DEBUG: Creating cluster {cluster_id} with {len(alert_ids)} alerts")
+            
+            # Implement the create
+            try:
+                cluster_data = {
+                    "cluster_id": cluster_id,
+                    "chains of thoughts": "Manually created cluster",
+                    "source_ids": "",
+                    "confidence": 0.5,
+                    "severity": "medium",
+                    "time": {"start": 0, "end": 0},
+                    "Description": "Manually created cluster"
+                }
+                self._create_new_cluster(alert_ids, cluster_data)
+                changes_made.append(f"Created new cluster {cluster_id} with {len(alert_ids)} alerts")
+            except Exception as e:
+                error_msg = f"Error creating cluster: {str(e)}"
+                print(f"DEBUG: {error_msg}")
+                changes_made.append(error_msg)
+        
+        # Now process other operations (moves, merges) AFTER clusters are created
+        
+        # Patterns for moves and merges
+        move_pattern = r"(?:move|add)\s+alert[s]?\s+(\d+(?:,\s*\d+)*)\s+from\s+(\w+)\s+to\s+(\w+)"
+        merge_pattern = r"(?:merge|combine)\s+cluster[s]?\s+(\w+)(?:\s+and|\s*,\s*)\s+(\w+)"
+        
+        # Find all move operations
+        print(f"DEBUG: Looking for move operations")
+        move_matches = re.finditer(move_pattern, response_content.lower())
+        for match in move_matches:
+            alert_ids_str, src_cluster, dst_cluster = match.groups()
+            print(f"DEBUG: Found move match: {match.group(0)}")
+            print(f"DEBUG: Alert IDs: {alert_ids_str}, From: {src_cluster}, To: {dst_cluster}")
+            
+            # Parse alert IDs
+            alert_ids = [int(aid.strip()) for aid in re.findall(r'\d+', alert_ids_str)]
+            
+            # Normalize cluster names
+            if src_cluster.startswith("cluster_"):
+                src_cluster_id = src_cluster
+            elif src_cluster.isdigit():
+                src_cluster_id = f"cluster_{int(src_cluster):03d}"
+            else:
+                src_cluster_id = src_cluster
+                
+            if dst_cluster.startswith("cluster_"):
+                dst_cluster_id = dst_cluster
+            elif dst_cluster.isdigit():
+                dst_cluster_id = f"cluster_{int(dst_cluster):03d}"
+            else:
+                dst_cluster_id = dst_cluster
+            
+            # Implement the move
+            try:
+                if src_cluster_id == "unassigned":
+                    self._move_from_unassigned_to_cluster(alert_ids, dst_cluster_id)
+                    changes_made.append(f"Moved {len(alert_ids)} alerts from unassigned to {dst_cluster_id}")
+                elif dst_cluster_id == "unassigned":
+                    self._move_from_cluster_to_unassigned(alert_ids, src_cluster_id)
+                    changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to unassigned")
+                else:
+                    self._move_between_clusters(alert_ids, src_cluster_id, dst_cluster_id)
+                    changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to {dst_cluster_id}")
+            except Exception as e:
+                error_msg = f"Error moving alerts: {str(e)}"
+                print(f"DEBUG: {error_msg}")
+                changes_made.append(error_msg)
+        
+        # Find all merge operations
+        print(f"DEBUG: Looking for merge operations")
+        merge_matches = re.finditer(merge_pattern, response_content.lower())
+        for match in merge_matches:
+            cluster_id1, cluster_id2 = match.groups()
+            print(f"DEBUG: Found merge match: {match.group(0)}")
+            print(f"DEBUG: Clusters to merge: {cluster_id1} and {cluster_id2}")
+            
+            # Normalize cluster names
+            if cluster_id1.startswith("cluster_"):
+                cluster_id1_norm = cluster_id1
+            elif cluster_id1.isdigit():
+                cluster_id1_norm = f"cluster_{int(cluster_id1):03d}"
+            else:
+                cluster_id1_norm = cluster_id1
+                
+            if cluster_id2.startswith("cluster_"):
+                cluster_id2_norm = cluster_id2
+            elif cluster_id2.isdigit():
+                cluster_id2_norm = f"cluster_{int(cluster_id2):03d}"
+            else:
+                cluster_id2_norm = cluster_id2
+            
+            # Implement the merge
+            try:
+                self._merge_clusters([cluster_id1_norm, cluster_id2_norm])
+                changes_made.append(f"Merged clusters {cluster_id1_norm} and {cluster_id2_norm}")
+            except Exception as e:
+                error_msg = f"Error merging clusters: {str(e)}"
+                print(f"DEBUG: {error_msg}")
+                changes_made.append(error_msg)
+        
+        # If no operations were found but there's text indicating changes
+        if not changes_made and any(op in response_content.lower() for op in ["move", "merge", "create"]):
+            print(f"DEBUG: No standard operations matched, trying fallback parsing")
+            # Try more lenient parsing as a fallback
+            fallback_changes = self._fallback_parse_reorganize(response_content)
+            changes_made.extend(fallback_changes)
+            
+        # If still no changes made, try one more direct approach for cluster creation
+        if not changes_made and "create" in response_content.lower() and "cluster" in response_content.lower():
+            print(f"DEBUG: Attempting direct cluster creation pattern matching")
+            # Special case for "Create a new cluster with alerts X, Y, Z"
+            try:
+                # Direct extraction of alert IDs
+                alert_ids = [int(num) for num in re.findall(r'\d+', response_content) 
+                             if len(str(num)) > 5]  # Assuming alert IDs are large numbers
+                
+                # Check for cluster ID specification
+                cluster_id_match = re.search(r'cluster[_\s]*(\d+)', response_content)
+                if cluster_id_match:
+                    cluster_id = f"cluster_{int(cluster_id_match.group(1)):03d}"
+                else:
+                    cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
+                
+                print(f"DEBUG: Direct creation - Cluster ID: {cluster_id}, Alert IDs: {alert_ids[:5]}...")
+                
+                # Create the cluster
+                cluster_data = {
+                    "cluster_id": cluster_id,
+                    "chains of thoughts": "Manually created cluster via direct pattern",
+                    "source_ids": "",
+                    "confidence": 0.5,
+                    "severity": "medium",
+                    "time": {"start": 0, "end": 0},
+                    "Description": "Manually created cluster"
+                }
+                self._create_new_cluster(alert_ids, cluster_data)
+                changes_made.append(f"Created new cluster {cluster_id} with {len(alert_ids)} alerts (direct method)")
+            except Exception as e:
+                error_msg = f"Error in direct cluster creation: {str(e)}"
+                print(f"DEBUG: {error_msg}")
+                changes_made.append(error_msg)
+        
+        return changes_made
+        
+    def _fallback_parse_reorganize(self, response_content):
+        """
+        Fallback parsing for reorganization when regex patterns fail to match.
+        Looks for key phrases and tries to extract operations more liberally.
+        
+        Args:
+            response_content: The LLM's response content
+            
+        Returns:
+            list: Description of changes made
+        """
+        changes_made = []
+        lines = response_content.lower().split('\n')
+        print(f"DEBUG: Running fallback parser on {len(lines)} lines")
+        
+        # Scan for specific patterns related to cluster operations across all lines
+        response_text = response_content.lower()
+        
+        # Detect cluster_id pattern
+        cluster_ids = re.findall(r'cluster[_\s]*(\d+)', response_text)
+        print(f"DEBUG: Found potential cluster IDs: {cluster_ids}")
+        
+        # Detect alert IDs - looking for 8-9 digit numbers (typical for alert IDs)
+        alert_ids_all = [int(num) for num in re.findall(r'\b\d{6,9}\b', response_text)]
+        print(f"DEBUG: Found potential alert IDs: {len(alert_ids_all)} IDs")
+        
+        # Process each line separately
+        for i, line in enumerate(lines):
+            line = line.strip()
+            print(f"DEBUG: Processing line {i}: {line[:50]}...")
+            
+            # Simple move operation
+            if "move" in line and "alert" in line and "to" in line:
+                # Extract alert IDs - look for numbers
+                alert_ids = [int(n) for n in re.findall(r'\d+', line) if 100000 <= int(n) < 1000000000]  # Typical alert ID range
+                
+                # Skip if no alert IDs found
+                if not alert_ids:
+                    continue
+                
+                print(f"DEBUG: Found move operation with alert IDs: {alert_ids}")
+                
+                # Extract cluster names - look for "cluster" or "unassigned"
+                if "unassigned" in line and "cluster" in line:
+                    # Determine direction
+                    if line.find("unassigned") < line.find("cluster"):
+                        # From unassigned to cluster
+                        cluster_matches = re.findall(r'cluster[_\s]*(\d+)', line)
+                        if cluster_matches:
+                            dst_cluster = f"cluster_{int(cluster_matches[0]):03d}"
+                            try:
+                                self._move_from_unassigned_to_cluster(alert_ids, dst_cluster)
+                                changes_made.append(f"Moved {len(alert_ids)} alerts from unassigned to {dst_cluster} (fallback)")
+                            except Exception as e:
+                                error_msg = f"Error in fallback move: {str(e)}"
+                                print(f"DEBUG: {error_msg}")
+                                changes_made.append(error_msg)
+                    else:
+                        # From cluster to unassigned
+                        cluster_matches = re.findall(r'cluster[_\s]*(\d+)', line)
+                        if cluster_matches:
+                            src_cluster = f"cluster_{int(cluster_matches[0]):03d}"
+                            try:
+                                self._move_from_cluster_to_unassigned(alert_ids, src_cluster)
+                                changes_made.append(f"Moved {len(alert_ids)} alerts from {src_cluster} to unassigned (fallback)")
+                            except Exception as e:
+                                error_msg = f"Error in fallback move: {str(e)}"
+                                print(f"DEBUG: {error_msg}")
+                                changes_made.append(error_msg)
+            
+            # Simple merge operation
+            elif "merge" in line and "cluster" in line:
+                cluster_matches = re.findall(r'cluster[_\s]*(\d+)', line)
+                if len(cluster_matches) >= 2:
+                    cluster_ids = [f"cluster_{int(cid):03d}" for cid in cluster_matches[:2]]
+                    try:
+                        self._merge_clusters(cluster_ids)
+                        changes_made.append(f"Merged clusters {cluster_ids[0]} and {cluster_ids[1]} (fallback)")
+                    except Exception as e:
+                        error_msg = f"Error in fallback merge: {str(e)}"
+                        print(f"DEBUG: {error_msg}")
+                        changes_made.append(error_msg)
+            
+            # Simple create operation
+            elif "create" in line and "cluster" in line:
+                # Look for specific cluster number for new cluster
+                new_cluster_id = None
+                cluster_number_match = re.search(r'cluster[_\s]*(\d+)', line)
+                if cluster_number_match:
+                    new_cluster_id = f"cluster_{int(cluster_number_match.group(1)):03d}"
+                else:
+                    # Generate a new ID if none specified
+                    new_cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
+                
+                # Look for alert IDs in this line or next few lines
+                alert_ids = []
+                
+                # Check current line first
+                alert_ids = [int(n) for n in re.findall(r'\d+', line) if 100000 <= int(n) < 1000000000]
+                
+                # If no alert IDs on this line, check next few lines
+                if not alert_ids:
+                    search_limit = min(i + 5, len(lines))
+                    for j in range(i + 1, search_limit):
+                        next_line = lines[j].strip()
+                        if "alert" in next_line:
+                            alert_ids = [int(n) for n in re.findall(r'\d+', next_line) if 100000 <= int(n) < 1000000000]
+                            if alert_ids:
+                                break
+                
+                # If no alert IDs found after searching, look in the entire text for large numbers
+                if not alert_ids and alert_ids_all:
+                    print(f"DEBUG: No alert IDs found in nearby lines, using all alert IDs from text")
+                    alert_ids = alert_ids_all
+                
+                if new_cluster_id:
+                    try:
+                        print(f"DEBUG: Creating new cluster {new_cluster_id} with {len(alert_ids)} alerts (fallback)")
+                        cluster_data = {
+                            "cluster_id": new_cluster_id,
+                            "chains of thoughts": "Manually created cluster via fallback parser",
+                            "source_ids": "",
+                            "confidence": 0.5,
+                            "severity": "medium",
+                            "time": {"start": 0, "end": 0},
+                            "Description": "Manually created cluster"
+                        }
+                        self._create_new_cluster(alert_ids, cluster_data)
+                        changes_made.append(f"Created new cluster {new_cluster_id} with {len(alert_ids)} alerts (fallback)")
+                    except Exception as e:
+                        error_msg = f"Error in fallback cluster creation: {str(e)}"
+                        print(f"DEBUG: {error_msg}")
+                        changes_made.append(error_msg)
+        
+        # Super fallback mode - if we still haven't found any operations
+        if not changes_made:
+            print(f"DEBUG: No operations found in line-by-line parsing, attempting super fallback mode")
+            
+            # For cluster creation, if "create" and "cluster" are present anywhere
+            if "create" in response_text and "cluster" in response_text:
+                new_cluster_id = f"cluster_{len(self.current_clusters['clusters']) + 1:03d}"
+                
+                # If "cluster_004" or similar is specified anywhere
+                for cluster_id in cluster_ids:
+                    if int(cluster_id) > len(self.current_clusters['clusters']):
+                        new_cluster_id = f"cluster_{int(cluster_id):03d}"
+                        break
+                
+                try:
+                    print(f"DEBUG: Super fallback - creating cluster {new_cluster_id} with {len(alert_ids_all)} alerts")
+                    cluster_data = {
+                        "cluster_id": new_cluster_id,
+                        "chains of thoughts": "Manually created cluster via super fallback",
+                        "source_ids": "",
+                        "confidence": 0.5,
+                        "severity": "medium",
+                        "time": {"start": 0, "end": 0},
+                        "Description": "Manually created cluster"
+                    }
+                    self._create_new_cluster(alert_ids_all, cluster_data)
+                    changes_made.append(f"Created new cluster {new_cluster_id} with {len(alert_ids_all)} alerts (super fallback)")
+                except Exception as e:
+                    error_msg = f"Error in super fallback cluster creation: {str(e)}"
+                    print(f"DEBUG: {error_msg}")
+                    changes_made.append(error_msg)
+        
+        return changes_made

@@ -1,71 +1,4 @@
-# Verify the action format - with better debugging
-            valid_format = False
-            
-            # For debugging, let's log what we're checking
-            actual_action = action_str.strip()
-            
-            # Check for extra "Action X:" prefix that might have been added by the LLM
-            action_prefix_match = re.match(r'(?:Action\s+\d+[a-z]?:?\s*)(.*)', actual_action)
-            if action_prefix_match:
-                actual_action = action_prefix_match.group(1).strip()
-                print(f"DEBUG: Removed 'Action X:' prefix, actual action is: {actual_action}")
-            
-            # Check for exact matches with action names (without parameters)
-            if actual_action in self.valid_prefixes:
-                valid_format = True
-                # Add empty brackets for consistency in internal processing
-                action_str = f"{actual_action}[]"
-                if to_print:
-                    print(f"DEBUG: Accepted action without brackets: {actual_action}")
-            
-            # Check for actions with brackets
-            elif (any(actual_action.startswith(prefix + "[") for prefix in self.valid_prefixes) 
-                  and actual_action.endswith("]")):
-                valid_format = True
-                # Use the exact action string as provided
-                action_str = actual_action
-                if to_print:
-                    print(f"DEBUG: Accepted action with brackets: {actual_action}")
-                    
-            # Check for actions with empty brackets
-            elif any(actual_action == f"{prefix}[]" for prefix in self.valid_prefixes):
-                valid_format = True
-                # Use the action string as is
-                action_str = actual_action
-                if to_print:
-                    print(f"DEBUG: Accepted action with empty brackets: {actual_action}")
-                    
-            # Check for actions with the format "Reorganize" without brackets but followed by text
-            elif any(actual_action.startswith(prefix) for prefix in self.valid_prefixes):
-                # Find which prefix it starts with
-                matching_prefix = next((prefix for prefix in self.valid_prefixes if actual_action.startswith(prefix)), None)
-                if matching_prefix and matching_prefix == "Reorganize":
-                    # This is a Reorganize action without proper brackets - fix it
-                    instructions = actual_action[len(matching_prefix):].strip()
-                    action_str = f"{matching_prefix}[{instructions}]"
-                    valid_format = True
-                    if to_print:
-                        print(f"DEBUG: Fixed Reorganize action format: {action_str}")
-                
-            if not valid_format and to_print:
-                print(f"DEBUG: Invalid action: '{actual_action}'. Valid prefixes: {self.valid_prefixes}")
-                print(f"DEBUG: Is in valid prefixes: {actual_action in self.valid_prefixes}")
-                
-                # Check if it's a formatting issue - the action might start with a valid prefix but have extra text
-                for prefix in self.valid_prefixes:
-                    if actual_action.startswith(prefix):
-                        print(f"DEBUG: Action starts with valid prefix '{prefix}' but has format issues")
-                        # Check if it's missing closing bracket
-                        if prefix == "Reorganize" and "[" in actual_action and "]" not in actual_action:
-                            print(f"DEBUG: Reorganize action is missing closing bracket")
-            
-            if not valid_format:
-                # Invalid action format
-                obs_str = f"Invalid action: '{actual_action}'. Valid actions are: {', '.join(self.valid_prefixes)}. You can also use '{self.valid_prefixes[0]}[]' format."
-                self.react_messages.append({"role": "system", "content": f"Observation {i}: {obs_str}"})
-                if to_print:
-                    print(f"Observation {i}: {obs_str}")
-                continueimport json
+import json
 from typing import Union, List, Dict, Any
 import gym
 import requests
@@ -89,14 +22,27 @@ class NetworkAlertAgent:
         # Define valid prefixes if not provided
         if valid_prefixes is None:
             # Use action names without brackets as the default
+            # Note: The order matters - if the environment has specific
+            # expected action names, these should match exactly
             self.valid_prefixes = [
                 "InitialExploration",
                 "TimeBasedClustering",
                 "TopologyBasedClustering",
                 "Reassess",
-                "Reorganize",
+                "Reorganize",  # For natural language reorganizations
                 "Finish"
             ]
+            
+            # To support backward compatibility with environment
+            if hasattr(env, 'action_to_text'):
+                # Extract valid actions from environment's action_to_text mapping
+                env_actions = set(env.action_to_text.values())
+                # Update valid prefixes to include any missing actions from environment
+                for action in env_actions:
+                    if action not in self.valid_prefixes:
+                        self.valid_prefixes.append(action)
+                        print(f"DEBUG: Added '{action}' from environment's action space")
+                
             # Also add versions with brackets for backward compatibility
             self.valid_prefixes_with_brackets = [f"{prefix}[" for prefix in self.valid_prefixes]
         else:
@@ -108,13 +54,18 @@ class NetworkAlertAgent:
         self.react_messages = []
     
     def _llm(self, messages, stop=None, *args, **kwargs):
-        """Call the LLM with the given messages."""
-        # This would call your LLM implementation (e.g., gpt_chat)
-        # For demonstration purposes, we'll return a mock response
+        """
+        Call the LLM with the given messages.
+        
+        This is a placeholder implementation that should be overridden with your
+        actual LLM integration (e.g., OpenAI API, Claude API, etc.)
+        """
+        # Default stop sequence if none provided
         if stop is None:
             stop = ["\n"]
         
-        # Mock LLM response
+        # Mock LLM response for demonstration
+        # In a real implementation, this would call your LLM service
         return {
             "choices": [
                 {
@@ -126,15 +77,65 @@ class NetworkAlertAgent:
         }
     
     def _step(self, action):
-        """Take a step in the environment with the given action."""
+        """
+        Take a step in the environment with the given action.
+        
+        Includes retry logic for API timeouts and better handling of reorganization actions.
+        """
+        # Special handling for reorganization actions to make them more robust
+        if action.startswith("Reorganize[") and "]" in action:
+            # Extract the content between brackets
+            instruction = action[len("Reorganize["):action.rfind("]")]
+            
+            # Check if the instruction contains cluster creation and alert movement
+            # If so, split into sequential operations to avoid "destination not found" errors
+            if "create" in instruction.lower() and "cluster" in instruction.lower() and "alert" in instruction.lower():
+                # Split complex reorganizations into simpler steps
+                try:
+                    # First, identify if there's a specific cluster ID mentioned
+                    import re
+                    cluster_id_match = re.search(r'cluster[_\s]*(\d+)', instruction)
+                    cluster_id = f"cluster_{int(cluster_id_match.group(1)):03d}" if cluster_id_match else None
+                    
+                    # Extract alert IDs
+                    alert_ids = [int(num) for num in re.findall(r'\b\d{6,}\b', instruction)]
+                    
+                    if cluster_id and alert_ids:
+                        print(f"DEBUG: Breaking down complex reorganization into steps")
+                        
+                        # Step 1: Create the cluster first (without specifying alerts)
+                        create_action = f"Reorganize[Create a new cluster with id {cluster_id}]"
+                        obs1, r1, done1, info1 = self._execute_step(create_action)
+                        
+                        if "error" in obs1.lower():
+                            print(f"DEBUG: Error in cluster creation step: {obs1}")
+                            # Just continue with the original action as fallback
+                            return self._execute_step(action)
+                        
+                        # Step 2: Move alerts to the newly created cluster
+                        alert_ids_str = ", ".join(str(aid) for aid in alert_ids)
+                        move_action = f"Reorganize[Move alerts {alert_ids_str} from unassigned to {cluster_id}]"
+                        return self._execute_step(move_action)
+                except Exception as e:
+                    print(f"DEBUG: Error breaking down reorganization: {str(e)}")
+                    # Fall back to original action if breakdown fails
+                    return self._execute_step(action)
+        
+        # For all other actions, just execute normally
+        return self._execute_step(action)
+    
+    def _execute_step(self, action):
+        """Execute the action in the environment with retry logic."""
         attempts = 0
-        while attempts < 10:
+        max_attempts = 10
+        while attempts < max_attempts:
             try:
                 return self.env.step(action)
             except requests.exceptions.Timeout:
                 attempts += 1
-                if attempts == 10:
-                    raise Exception("Max retry attempts reached for step action.")
+                if attempts == max_attempts:
+                    raise Exception(f"Max retry attempts ({max_attempts}) reached for step action.")
+                print(f"DEBUG: Timeout on attempt {attempts}, retrying...")
     
     def set_valid_prefixes(self, valid_prefixes: list):
         """Set the valid action prefixes for ReAct."""
@@ -143,9 +144,9 @@ class NetworkAlertAgent:
         self.valid_prefixes_with_brackets = [f"{prefix}[" if not prefix.endswith("[") else prefix 
                                           for prefix in valid_prefixes]
     
-    def reset_env(self, valid_prefixes: list=None, *args, **kwargs):
+    def reset_env(self, alerts=None, topology_info=None, valid_prefixes=None):
         """Reset the environment and optionally set new valid prefixes."""
-        observation = self.env.reset(*args, **kwargs)
+        observation = self.env.reset(alerts=alerts, topology_info=topology_info)
         if valid_prefixes:
             self.valid_prefixes = valid_prefixes
         self.react_messages = []
@@ -254,7 +255,7 @@ class NetworkAlertAgent:
             
             # Check for actions with brackets
             elif (any(actual_action.startswith(prefix + "[") for prefix in self.valid_prefixes) 
-                  and actual_action.endswith("]")):
+                and actual_action.endswith("]")):
                 valid_format = True
                 if to_print:
                     print(f"DEBUG: Accepted action with brackets: {actual_action}")
@@ -265,60 +266,6 @@ class NetworkAlertAgent:
                 if to_print:
                     print(f"DEBUG: Accepted action with empty brackets: {actual_action}")
             
-            # Special handling for DirectReorganize with potentially malformed JSON
-            elif actual_action.startswith("DirectReorganize[") and "]" in actual_action:
-                try:
-                    # Extract the content between the first [ and the last ]
-                    param_start = actual_action.find("[") + 1
-                    param_end = actual_action.rfind("]")
-                    params_str = actual_action[param_start:param_end]
-                    
-                    # Try to parse it as JSON (will throw exception if invalid)
-                    # If this works, the JSON is valid
-                    json_params = json.loads(params_str)
-                    
-                    # Valid JSON, accept the action
-                    valid_format = True
-                    # Use the corrected format
-                    action_str = f"DirectReorganize[{json.dumps(json_params)}]"
-                    if to_print:
-                        print(f"DEBUG: Accepted DirectReorganize with valid JSON: {params_str}")
-                except json.JSONDecodeError as e:
-                    # JSON is invalid, but format is close - try to correct common errors
-                    if to_print:
-                        print(f"DEBUG: DirectReorganize has invalid JSON: {e}")
-                        print(f"Original params: {params_str}")
-                    
-                    # Common error correction attempts:
-                    try:
-                        # Try fixing single quotes
-                        corrected_str = params_str.replace("'", '"')
-                        json_params = json.loads(corrected_str)
-                        
-                        # Success! Use the corrected format
-                        valid_format = True
-                        action_str = f"DirectReorganize[{json.dumps(json_params)}]"
-                        if to_print:
-                            print(f"DEBUG: Fixed JSON by replacing single quotes: {corrected_str}")
-                    except:
-                        # Still invalid, one last heroic attempt - full regex-based JSON correction
-                        try:
-                            import re
-                            # Replace unquoted keys with quoted keys
-                            corrected_str = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', params_str)
-                            # Replace all single quotes with double quotes
-                            corrected_str = corrected_str.replace("'", '"')
-                            json_params = json.loads(corrected_str)
-                            
-                            # Success! Use the corrected format
-                            valid_format = True
-                            action_str = f"DirectReorganize[{json.dumps(json_params)}]"
-                            if to_print:
-                                print(f"DEBUG: Fixed JSON with advanced correction: {corrected_str}")
-                        except:
-                            # Give up - JSON is too broken
-                            pass
-                
             if not valid_format and to_print:
                 print(f"DEBUG: Invalid action: '{actual_action}'. Valid prefixes: {self.valid_prefixes}")
                 print(f"DEBUG: Is in valid prefixes: {actual_action in self.valid_prefixes}")
@@ -393,7 +340,13 @@ class NetworkAlertAgent:
                     }
                 }
                 stats.update(env_stats)
-        except:
-            stats["env_history"] = "Not available or accessible"
+                
+                # Add information about recent reasoning if available
+                if hasattr(self.env, 'recent_reasoning'):
+                    stats["env_recent_reasoning"] = {
+                        key: len(value) > 0 for key, value in self.env.recent_reasoning.items()
+                    }
+        except Exception as e:
+            stats["env_history"] = f"Not available or accessible: {str(e)}"
         
         return stats
