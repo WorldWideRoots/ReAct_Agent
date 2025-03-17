@@ -639,331 +639,14 @@ def reorganize(self, instructions):
 
 
     # --------------------
-    def assess_llm(self, temperature=0.01):
-    """
-    Evaluate the current state of alert clusters and provide recommendations for next steps.
-    Uses LLM to assess clusters with a focus on root cause identification through temporal
-    and topological relationships.
-    """
-    # Get the function-specific history
-    history = self.function_histories.get("assess", [])
-    
-    # Validate current_clusters
-    if not isinstance(self.current_clusters, dict):
-        raise TypeError("current_clusters must be a dictionary")
-        
-    # Check for required keys
-    if 'clusters' not in self.current_clusters or 'unassigned_alerts' not in self.current_clusters:
-        raise KeyError("current_clusters must contain 'clusters' and 'unassigned_alerts' keys")
-        
-    # Prepare data for the LLM
-    try:
-        # Serialize clusters and unassigned alerts
-        clusters_data = json.dumps({'clusters': self.current_clusters['clusters']}, indent=1)
-        unassigned_alerts_data = json.dumps({'unassigned_alerts': self.current_clusters['unassigned_alerts']}, indent=1)
-        current_alerts_batch_str = json.dumps(self.current_alerts_batch)
-        topology_info_str = json.dumps(self.topology_info, separators=(',', ': '), indent=1)
-        
-        # Get summarized stats to help with analysis
-        num_clusters = len(self.current_clusters['clusters'])
-        num_unassigned = len(self.current_clusters['unassigned_alerts'])
-        total_alerts = sum(len(cluster.get('alert_ids', [])) for cluster in self.current_clusters['clusters']) + num_unassigned
-        
-        # Calculate average confidence if available
-        total_confidence = sum(float(cluster.get('confidence', 0)) for cluster in self.current_clusters['clusters'] if 'confidence' in cluster)
-        avg_confidence = total_confidence / num_clusters if num_clusters > 0 else 0
-        
-        # Verify serialization
-        if not all(isinstance(x, str) for x in [clusters_data, unassigned_alerts_data, current_alerts_batch_str, topology_info_str]):
-            raise TypeError('The serialized data is not a string')
-    except Exception as e:
-        print(f'Error preparing assessment data: {e}')
-        return None, history
-        
-    # Get previous clustering summaries for context
-    clustering_context = self._get_clustering_summaries()
-    
-    # Create system instructions with enhanced guidance and few-shot examples
-    system_instructions = f"""
-    You are an advanced network alert assessment expert with the primary goal of identifying ROOT CAUSES of network events.
-    
-    # Current Alert Statistics:
-    - Total Alerts: {total_alerts}
-    - Number of Clusters: {num_clusters}
-    - Unassigned Alerts: {num_unassigned}
-    - Average Confidence: {avg_confidence:.2f}
-    
-    # Previous Clustering Steps:
-    {clustering_context}
-    
-    # ROOT CAUSE IDENTIFICATION PRINCIPLES:
-    
-    1. **Temporal Causality Is Primary Evidence:**
-       - First alerts in a sequence often indicate root causes
-       - Alerts occurring within 15 minutes of each other may be causally related
-       - Sequential patterns reveal propagation paths: root cause → symptoms
-       - Always ask: "What happened FIRST?" to identify potential root causes
-    
-    2. **Topological Relationships Reveal Propagation Paths:**
-       - Network dependencies create predictable failure patterns
-       - Issues propagate FROM root cause devices TO dependent devices
-       - Connected devices in the topology often share cause-effect relationships
-       - Network architecture helps distinguish primary failures from secondary effects
-    
-    3. **Alert Content Is Secondary Evidence:**
-       - Similar descriptions WITHOUT temporal/topological links often represent SEPARATE issues
-       - NEVER group alerts solely based on similar descriptions or types
-       - Only consider descriptions AFTER establishing temporal/topological relationships
-    
-    # TOPOLOGY ANALYSIS GUIDELINES:
-    
-    When evaluating topological relationships:
-    
-    1. **Direct Connections Matter Most:**
-       - Devices directly connected in the topology are strong candidates for the same cluster
-       - Root cause devices often have multiple dependent devices showing alerts
-    
-    2. **Dependency Direction Is Critical:**
-       - Failures typically propagate FROM upstream TO downstream devices
-       - Earlier alerts in upstream devices often indicate root causes
-       - Later alerts in downstream devices often indicate symptoms
-    
-    3. **Common Pattern Recognition:**
-       - Network device failures → connected device failures → application errors
-       - Database failures → application errors → client-side alerts
-       - Authentication system failures → widespread login errors
-       - Storage failures → database errors → application timeouts
-    
-    4. **Cross-System Dependencies:**
-       - Some dependencies aren't in network topology but are functional:
-         - Web servers depend on databases even if connected through multiple network hops
-         - Client applications depend on authentication services
-         - Virtualized services depend on underlying hardware
-    
-    # REASSESSMENT CLUSTERING PRINCIPLES:
-    
-    When evaluating current clusters, apply these principles (similar to initial exploration):
-    
-    1. **Time-Based Grouping:**
-       - Events within 15-minute windows should be examined for causal relationships
-       - First alerts in a time window are potential root causes
-       - Cascade patterns (failures spreading over time) indicate related events
-    
-    2. **Topology-Based Grouping:**
-       - Connected devices in the topology likely share causal relationships
-       - Network dependencies create predictable failure patterns
-       - Upstream failures cause downstream symptoms
-    
-    3. **Alert Association Logic:**
-       - Alerts should be grouped if they:
-         a) Share temporal proximity (within 15 minutes) AND/OR
-         b) Have topological relationships (connected/dependent devices) AND/OR
-         c) Show a clear cascading pattern (device A fails → device B fails → application C errors)
-       - Alerts should NOT be grouped solely based on similar descriptions or types
-    
-    # ASSESSMENT SEQUENCE:
-    Focus your assessment in this exact order:
-    
-    1. **Alert-Cluster Fit Analysis:** 
-       - Are there any alerts in current clusters that do NOT belong there?
-       - For each cluster, identify any alerts that don't share temporal or topological relationships with the potential root cause
-       - Recommend moving these alerts if they would better fit another cluster or should be unassigned
-    
-    2. **Cluster Merger Analysis:**
-       - Are there multiple clusters that likely represent the SAME root cause event?
-       - Look for clusters with overlapping time windows and connected devices in the topology
-       - Recommend merging clusters that represent the same causal chain
-    
-    3. **Unassigned Alert Analysis:**
-       - Do any unassigned alerts belong to existing clusters?
-       - Look for temporal sequences and topological connections between unassigned alerts and cluster events
-       - Recommend moving unassigned alerts into appropriate clusters if clear relationships exist
-    
-    ALL assessments must be based on TEMPORAL and TOPOLOGICAL relationships, with the primary goal of identifying root causes.
-    
-    # RECOMMENDATION GUIDELINES:
-    
-    Based on your assessment, recommend either:
-    
-    1. **TimeBasedClustering:** When temporal patterns aren't fully captured
-       
-    2. **TopologyBasedClustering:** When network dependencies aren't fully reflected
-    
-    3. **Reorganize:** When specific changes would better reveal root causes
-       - Unlike other recommendations, Reorganize can include MULTIPLE specific operations
-       - List each operation in clear, actionable language with IDs and reasoning
-       - Format as a numbered list of specific operations, for example:
-       
-       Reorganize[
-       1. Move alerts 1001, 1002 from unassigned to cluster_003 (these alerts occurred 5 minutes after router failure in cluster_003 and are from connected switches)
-       2. Merge clusters 001 and 004 (cluster_001 contains router failures and cluster_004 contains downstream effects from the same root cause)
-       3. Create a new cluster with alerts 2001, 2002, 2003 (these form a distinct authentication failure pattern separate from existing clusters)
-       ]
-    
-    4. **Finish:** When all clusters effectively represent distinct root causes
-    """
-    
-    # Create user message
-    user_message = f"""
-    Please assess the current state of alert clusters with a focus on identifying root causes through temporal and topological relationships.
-    
-    # CURRENT ALERT BATCH:
-    {current_alerts_batch_str}
-    
-    # CURRENT CLUSTERS:
-    {clusters_data}
-    
-    # UNASSIGNED ALERTS:
-    {unassigned_alerts_data}
-    
-    # TOPOLOGY INFORMATION:
-    {topology_info_str}
-    
-    Please provide:
-    1. A detailed assessment focusing on temporal sequences and network dependencies
-    2. Analysis of whether current clusters reflect probable root causes and their effects
-    3. A specific recommendation for the next action that will best reveal true root causes
-    
-    Structure your response as follows:
-    
-    ## Alert-Cluster Fit Analysis
-    [Your detailed analysis of whether alerts in current clusters belong there]
-    
-    ## Cluster Merger Analysis
-    [Your evaluation of whether any clusters should be merged]
-    
-    ## Unassigned Alert Analysis
-    [Your analysis of whether any unassigned alerts should be moved to existing clusters]
-    
-    ## Recommendation
-    [Your ONE specific next action recommendation with detailed reasoning]
-    """
-    
-    # Prepare messages for LLM
-    messages = [
-        {"role": "system", "content": system_instructions},
-        {"role": "user", "content": user_message}
-    ]
-    
-    # Validate messages
-    for msg in messages:
-        if not isinstance(msg["content"], str):
-            raise ValueError(f"Message content is not a string: {msg['content']}")
-            
-    # Add messages to function-specific history
-    history += messages
-    self.function_histories["assess"] = history
-    
-    # Call the LLM
-    reply = self._llm(history, temperature=temperature, model=self.llm_model)
-    
-    # Validate response
-    if 'choices' in reply and len(reply['choices']) > 0:
-        response_content = reply['choices'][0]['message']['content']
-        history.append({"role": "assistant", "content": response_content})
-        self.function_histories["assess"] = history
-        
-        # Store response in recent reasoning
-        self.recent_reasoning["assess"] = response_content
-        
-        # Create a summary for the ReAct framework
-        summary = f"Assessment:\n- Evaluated {num_clusters} clusters and {num_unassigned} unassigned alerts\n"
-        
-        # Extract recommendation
-        recommendation = self._extract_recommendation(response_content)
-        summary += f"- Recommended: {recommendation}\n"
-        
-        # Add to ReAct history
-        self.react_history.append({
-            "action": "Reassess",
-            "summary": summary
-        })
-        
-        return reply, history
-        
-    else:
-        print("Error: Invalid response from LLM during assessment")
-        return None, history
-
-
-def _extract_recommendation(self, response_content):
-    """
-    Extract the recommended next action from the LLM response.
-    Supports multiple reorganization operations.
-    
-    Args:
-        response_content: The full text response from the LLM
-        
-    Returns:
-        str: The recommended next action
-    """
-    try:
-        import re
-        
-        # Look for reorganize with multiple operations in square brackets format
-        reorganize_pattern = r'Reorganize\s*\[\s*([\s\S]*?)\s*\]'
-        reorganize_match = re.search(reorganize_pattern, response_content)
-        
-        if reorganize_match:
-            # Get the entire content within the brackets
-            operations_text = reorganize_match.group(1).strip()
-            return f"Reorganize[{operations_text}]"
-        
-        # Look for standard action recommendations
-        action_types = ["TimeBasedClustering", "TopologyBasedClustering", "Reorganize", "Finish"]
-        
-        lines = response_content.split('\n')
-        for line in lines:
-            line = line.strip()
-            
-            # Check if any of the action types are mentioned in this line
-            for action in action_types:
-                if action in line:
-                    # For Reorganize actions that don't use the new format
-                    if action == "Reorganize" and "[" in line:
-                        # Extract the content between brackets if present
-                        try:
-                            instruction_start = line.find("[") + 1
-                            instruction_end = line.rfind("]")
-                            if instruction_end > instruction_start:
-                                instruction = line[instruction_start:instruction_end].strip()
-                                if instruction:
-                                    return f"{action}[{instruction}]"
-                        except:
-                            pass
-                    
-                    # For other action types
-                    return f"{action}[]"
-        
-        # If we couldn't find a specific action recommendation, look for general recommendation text
-        recommendation_markers = [
-            "Recommendation:", "Next Action:", "Next Step:", "Recommended Action:",
-            "I recommend", "You should", "The next step should be"
-        ]
-        
-        for line in lines:
-            line = line.strip()
-            for marker in recommendation_markers:
-                if marker in line:
-                    # Return this line as the recommendation
-                    return line
-        
-        # Default fallback
-        return "No clear action recommendation found. Consider performing Reassess[] again with more detail."
-        
-    except Exception as e:
-        # Log the error and return a default recommendation
-        print(f"Error extracting recommendation: {str(e)}")
-        return "Error extracting recommendation. Consider performing Reassess[] again."
-
-
-def reorganize(self, instructions):
+def reorganize(self, instructions, verbose=False):
     """
     Implement reorganization based on natural language instructions.
     Support for multiple operations in a single instruction string.
     
     Args:
         instructions: Natural language instructions for reorganization
+        verbose: Whether to print detailed debug information
         
     Returns:
         list: Description of changes made
@@ -972,18 +655,27 @@ def reorganize(self, instructions):
         import re
         operations_performed = []
         
+        if verbose:
+            print(f"\n=== Processing Reorganization Instructions ===")
+            print(f"Instructions: {instructions}")
+        
         # Check if instructions contain numbered operations (e.g., "1. Move alerts...")
         numbered_operations = re.findall(r'(?:\d+\.\s*)([^\d]+?)(?=\d+\.|$)', instructions)
         
         if numbered_operations:
-            print(f"Processing {len(numbered_operations)} reorganization operations")
+            if verbose:
+                print(f"• Found {len(numbered_operations)} numbered operations")
+            
             # Process each operation separately
             for i, op in enumerate(numbered_operations):
                 op = op.strip()
                 if op:
+                    if verbose:
+                        print(f"\n--- Operation {i+1}/{len(numbered_operations)} ---")
+                        print(f"• {op}")
+                    
                     # Recursively call reorganize for each operation
-                    print(f"Operation {i+1}: {op}")
-                    sub_results = self.reorganize(op)
+                    sub_results = self.reorganize(op, verbose=verbose)
                     operations_performed.extend(sub_results)
             
             return operations_performed
@@ -1008,8 +700,8 @@ def reorganize(self, instructions):
             # Look for large numbers that might be alert IDs (usually 6+ digits)
             potential_alert_ids = [int(num) for num in re.findall(r'\b\d{6,}\b', instructions)]
             
-            if not potential_alert_ids:
-                print(f"Warning: No alert IDs found for cluster creation")
+            if verbose:
+                print(f"• Creating cluster {cluster_id} with {len(potential_alert_ids)} alerts")
             
             # Create the new cluster
             cluster_data = {
@@ -1038,9 +730,8 @@ def reorganize(self, instructions):
             # Extract alert IDs - look for 6+ digit numbers (typical for alert IDs)
             alert_ids = [int(num) for num in re.findall(r'\b\d{6,}\b', instructions)]
             
-            if not alert_ids:
-                print(f"Warning: No alert IDs found for move operation")
-                return ["No alert IDs found in move instructions"]
+            if verbose:
+                print(f"• Found {len(alert_ids)} alerts to move")
             
             # Determine source and destination
             if "unassigned" in instructions.lower() and "cluster" in instructions.lower():
@@ -1052,25 +743,19 @@ def reorganize(self, instructions):
                     
                     # Determine direction (from unassigned to cluster or from cluster to unassigned)
                     if instructions.lower().find("unassigned") < instructions.lower().find("cluster"):
+                        if verbose:
+                            print(f"• Moving {len(alert_ids)} alerts FROM unassigned TO {cluster_id}")
+                        
                         # Moving from unassigned to cluster
-                        try:
-                            self._move_from_unassigned_to_cluster(alert_ids, cluster_id)
-                            operations_performed.append(f"Moved {len(alert_ids)} alerts from unassigned to {cluster_id}")
-                        except Exception as e:
-                            error_msg = f"Error moving alerts to cluster: {str(e)}"
-                            print(error_msg)
-                            operations_performed.append(error_msg)
+                        self._move_from_unassigned_to_cluster(alert_ids, cluster_id)
+                        operations_performed.append(f"Moved {len(alert_ids)} alerts from unassigned to {cluster_id}")
                     else:
+                        if verbose:
+                            print(f"• Moving {len(alert_ids)} alerts FROM {cluster_id} TO unassigned")
+                        
                         # Moving from cluster to unassigned
-                        try:
-                            self._move_from_cluster_to_unassigned(alert_ids, cluster_id)
-                            operations_performed.append(f"Moved {len(alert_ids)} alerts from {cluster_id} to unassigned")
-                        except Exception as e:
-                            error_msg = f"Error moving alerts to unassigned: {str(e)}"
-                            print(error_msg)
-                            operations_performed.append(error_msg)
-                else:
-                    operations_performed.append("No cluster ID found in move instructions")
+                        self._move_from_cluster_to_unassigned(alert_ids, cluster_id)
+                        operations_performed.append(f"Moved {len(alert_ids)} alerts from {cluster_id} to unassigned")
             elif "cluster" in instructions.lower() and instructions.lower().count("cluster") >= 2:
                 # Moving between clusters
                 # Find source and destination cluster IDs
@@ -1079,17 +764,11 @@ def reorganize(self, instructions):
                     src_cluster_id = f"cluster_{int(cluster_matches[0]):03d}"
                     dst_cluster_id = f"cluster_{int(cluster_matches[1]):03d}"
                     
-                    try:
-                        self._move_between_clusters(alert_ids, src_cluster_id, dst_cluster_id)
-                        operations_performed.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to {dst_cluster_id}")
-                    except Exception as e:
-                        error_msg = f"Error moving alerts between clusters: {str(e)}"
-                        print(error_msg)
-                        operations_performed.append(error_msg)
-                else:
-                    operations_performed.append("Not enough cluster IDs found for inter-cluster move")
-            else:
-                operations_performed.append("Could not determine source and destination for move operation")
+                    if verbose:
+                        print(f"• Moving {len(alert_ids)} alerts FROM {src_cluster_id} TO {dst_cluster_id}")
+                    
+                    self._move_between_clusters(alert_ids, src_cluster_id, dst_cluster_id)
+                    operations_performed.append(f"Moved {len(alert_ids)} alerts from {src_cluster_id} to {dst_cluster_id}")
         
         # Look for merge operations
         elif "merge" in instructions.lower() and "cluster" in instructions.lower():
@@ -1106,23 +785,516 @@ def reorganize(self, instructions):
                     if len(cluster_ids) == 2:
                         break
                 
-                try:
-                    self._merge_clusters(cluster_ids)
-                    operations_performed.append(f"Merged {cluster_ids[1]} into {cluster_ids[0]}")
-                except Exception as e:
-                    error_msg = f"Error merging clusters: {str(e)}"
-                    print(error_msg)
-                    operations_performed.append(error_msg)
-            else:
-                operations_performed.append("Not enough cluster IDs found for merge operation")
+                if verbose:
+                    print(f"• Merging {cluster_ids[1]} into {cluster_ids[0]}")
+                
+                self._merge_clusters(cluster_ids)
+                operations_performed.append(f"Merged {cluster_ids[1]} into {cluster_ids[0]}")
         
         # If nothing happened, report it
         if not operations_performed:
+            if verbose:
+                print("• No operations identified from instructions")
             operations_performed.append("No operations were identified from the instructions")
         
         return operations_performed
         
     except Exception as e:
-        error_message = f"Error in reorganize function: {str(e)}"
-        print(error_message)
+        error_message = f"Error in reorganize: {str(e)}"
+        print(f"\n!!! ERROR: {error_message}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
         return [error_message]
+    
+def step(self, action, verbose=False):
+    """
+    Take a step in the environment using the provided action.
+    
+    Args:
+        action: String in format "ActionName[parameters]" or just "ActionName"
+        verbose: Whether to print detailed debug information
+    
+    Returns:
+        observation: Current state of the environment
+        reward: Reward for the action
+        done: Whether the episode is done
+        info: Additional information
+    """
+    # Parse the action string
+    if "[" in action and "]" in action:
+        action_name = action.split("[")[0]
+        action_params = action.split("[")[1].split("]")[0]
+    else:
+        action_name = action
+        action_params = ""
+    
+    if verbose:
+        print(f"\n{'='*50}")
+        print(f"EXECUTING ACTION: {action_name}")
+        if action_params:
+            print(f"PARAMETERS: {action_params}")
+        print(f"{'='*50}")
+    
+    # Execute the action
+    if action_name == "InitialExploration":
+        result = self.initial_exploration()
+        observation = f"Initial exploration completed. Found {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
+    
+    elif action_name == "TimeBasedClustering":
+        result = self.time_based_clustering_llm()
+        observation = f"Time-based clustering completed. Now have {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
+    
+    elif action_name == "TopologyBasedClustering":
+        result = self.topology_based_clustering_llm()
+        observation = f"Topology-based clustering completed. Now have {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
+    
+    elif action_name == "Reassess":
+        result, _ = self.assess_llm()
+        
+        # Extract recommendation from result
+        if result and 'choices' in result and len(result['choices']) > 0:
+            response_content = result['choices'][0]['message']['content']
+            observation = f"Reassessment completed. Now have {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts.\n\n{response_content}"
+        else:
+            observation = f"Reassessment completed, but no clear recommendation was provided."
+    
+    elif action_name == "Reorganize":
+        # Use reorganize with verbosity control
+        operations = self.reorganize(action_params, verbose=verbose)
+        
+        # Format observation
+        observation = "Reorganization completed.\n\n"
+        observation += "Operations performed:\n"
+        for op in operations:
+            observation += f"- {op}\n"
+        
+        # Add current state
+        observation += f"\nCurrent state: {len(self.current_clusters['clusters'])} clusters, {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
+    
+    elif action_name == "Finish":
+        observation = "Alert aggregation process completed."
+        
+        # Add a final summary
+        observation += f"\n\nFinal state: {len(self.current_clusters['clusters'])} clusters, {len(self.current_clusters['unassigned_alerts'])} unassigned alerts."
+        
+        return observation, 0, True, {"clusters": self.current_clusters}
+    
+    else:
+        observation = f"Unknown action: {action_name}"
+    
+    # Store the action and result in history
+    self.history.append({
+        "action": action,
+        "observation": observation
+    })
+    
+    # Set done flag and reward
+    done = False
+    reward = 0
+    
+    if verbose:
+        print(f"\n{'='*50}")
+        print(f"RESULT:")
+        print(f"{len(self.current_clusters['clusters'])} clusters, {len(self.current_clusters['unassigned_alerts'])} unassigned alerts")
+        print(f"{'='*50}\n")
+    
+    return observation, reward, done, {"clusters": self.current_clusters}
+
+
+def _step(self, action, verbose=False):
+    """
+    Take a step in the environment with the given action.
+    
+    Simplified implementation that just ensures valid action format
+    and handles retry logic for timeouts.
+    
+    Args:
+        action: The action to take
+        verbose: Whether to print detailed debug information
+    
+    Returns:
+        Tuple of (observation, reward, done, info)
+    """
+    # Clean up action format if needed
+    if "[" not in action and action in self.valid_prefixes:
+        # Add empty brackets for consistency
+        action = f"{action}[]"
+    
+    # Execute the action with retry logic
+    attempts = 0
+    max_attempts = 5
+    while attempts < max_attempts:
+        try:
+            return self.env.step(action, verbose=verbose)
+        except Exception as e:
+            attempts += 1
+            if verbose:
+                print(f"! Attempt {attempts}/{max_attempts} failed: {str(e)}")
+            if attempts == max_attempts:
+                raise Exception(f"Max retry attempts ({max_attempts}) reached: {str(e)}")
+            
+
+def react(self, initial_prompt: str, max_num_steps: int=8, to_print: bool=False, verbose=False):
+    """
+    Run the ReAct framework to perform alert aggregation.
+    
+    Args:
+        initial_prompt: The system prompt that guides the agent
+        max_num_steps: Maximum number of ReAct steps to take
+        to_print: Whether to print intermediate steps
+        verbose: Whether to print detailed debug information
+        
+    Returns:
+        (reward, info): Final reward and information from the environment
+    """
+    # Rest of implementation...
+    
+    try:
+        obs, r, done_flag, info = self._step(action_str, verbose=verbose)
+        
+        # Rest of implementation...
+
+
+
+user_message = f"""
+Please assess the current state of alert clusters with a focus on identifying root causes through temporal and topological relationships.
+
+# CURRENT ALERT BATCH:
+{current_alerts_batch_str}
+
+# CURRENT CLUSTERS:
+{clusters_data}
+
+# UNASSIGNED ALERTS:
+{unassigned_alerts_data}
+
+# TOPOLOGY INFORMATION:
+{topology_info_str}
+
+Please provide:
+1. A detailed assessment focusing on temporal sequences and network dependencies
+2. Analysis of whether current clusters reflect probable root causes and their effects
+3. A specific recommendation for the next action that will best reveal true root causes
+
+Structure your response as follows:
+
+## Alert-Cluster Fit Analysis
+[Your detailed analysis of whether alerts in current clusters belong there]
+
+## Cluster Merger Analysis
+[Your evaluation of whether any clusters should be merged]
+
+## Unassigned Alert Analysis
+[Your analysis of whether any unassigned alerts should be moved to existing clusters]
+
+## Recommendation
+[Your recommendation in ONE of these EXACT formats:]
+
+TimeBasedClustering
+
+TopologyBasedClustering
+
+Finish
+
+Reorganize[Move alert 845907078 from unassigned to cluster_001]
+
+Reorganize[
+1. Move alert 845907078 from unassigned to cluster_001
+2. Move alerts 845907079, 845907080 from cluster_002 to cluster_003
+3. Create a new cluster with alerts 845907081, 845907082, 845907083
+]
+
+Be sure to use the EXACT formatting shown above, especially for the Reorganize action.
+"""
+
+
+# RECOMMENDATION EXAMPLES:
+
+## Example: Well-Formatted Reorganize with Multiple Operations
+Reorganize[
+1. Move alerts 1001, 1002 from unassigned to cluster_003
+2. Merge clusters 001 and 004
+3. Create a new cluster with alerts 2001, 2002, 2003
+]
+
+## Example: Well-Formatted Reorganize with Single Operation
+Reorganize[Move alerts 1001, 1002 from unassigned to cluster_003]
+
+## Example: Well-Formatted Simple Action
+TimeBasedClustering
+
+
+
+
+def _extract_recommendation(self, response_content):
+    """
+    Extract the recommended next action from the LLM response.
+    Optimized for the new standardized format.
+    """
+    try:
+        import re
+        
+        # Look for well-formatted actions
+        simple_actions = ["TimeBasedClustering", "TopologyBasedClustering", "Finish"]
+        
+        # First look for a reorganize with multiple operations
+        multi_op_pattern = r'Reorganize\s*\[\s*\n([\s\S]*?)\n\s*\]'
+        multi_op_match = re.search(multi_op_pattern, response_content)
+        
+        if multi_op_match:
+            operations_text = multi_op_match.group(1).strip()
+            return f"Reorganize[{operations_text}]"
+        
+        # Then look for a reorganize with a single operation
+        single_op_pattern = r'Reorganize\s*\[\s*(.*?)\s*\]'
+        single_op_match = re.search(single_op_pattern, response_content)
+        
+        if single_op_match:
+            operation_text = single_op_match.group(1).strip()
+            return f"Reorganize[{operation_text}]"
+        
+        # Look for simple actions
+        for action in simple_actions:
+            if re.search(r'\b' + action + r'\b', response_content):
+                return f"{action}[]"
+        
+        # Default fallback
+        return "No clear action recommendation found. Consider performing Reassess[] again."
+        
+    except Exception as e:
+        print(f"Error extracting recommendation: {str(e)}")
+        return "Error extracting recommendation. Consider performing Reassess[] again."
+    
+
+def react(self, initial_prompt: str, max_num_steps: int=8, to_print: bool=False, verbose: bool=False):
+    """
+    Run the ReAct framework to perform alert aggregation.
+    
+    Simplified implementation that focuses on robustness and simplicity.
+    
+    Args:
+        initial_prompt: The system prompt that guides the agent
+        max_num_steps: Maximum number of ReAct steps to take
+        to_print: Whether to print intermediate steps
+        verbose: Whether to print detailed debug information
+        
+    Returns:
+        (reward, info): Final reward and information from the environment
+    """
+    # Add format instructions to the initial prompt
+    format_instructions = """
+    # ACTION FORMAT GUIDELINES:
+    
+    When generating thoughts and actions, follow this format:
+    
+    Thought N: [Your detailed reasoning about the current state and what action to take next]
+    
+    Then for your action, use EXACTLY one of these formats:
+    
+    Action N: InitialExploration
+    Action N: TimeBasedClustering
+    Action N: TopologyBasedClustering
+    Action N: Reassess
+    Action N: Finish
+    
+    For reorganize actions with a SINGLE operation:
+    Action N: Reorganize[Move alert 845907078 from unassigned to cluster_001]
+    
+    For reorganize actions with MULTIPLE operations:
+    Action N: Reorganize[
+    1. Move alert 845907078 from unassigned to cluster_001
+    2. Move alerts 845907079, 845907080 from cluster_002 to cluster_003
+    3. Create a new cluster with alerts 845907081, 845907082, 845907083
+    ]
+    
+    Always place the entire instruction inside square brackets. For multiple operations, 
+    use numbered list format with each operation on its own line.
+    """
+    
+    enhanced_prompt = initial_prompt + "\n\n" + format_instructions
+    
+    # Store the conversation in messages
+    self.react_messages = [{"role": "system", "content": enhanced_prompt}]
+    
+    # Initialize tracking variables
+    n_calls = 0
+    done = False
+    
+    if verbose:
+        print(f"\n{'='*50}")
+        print(f"STARTING REACT FRAMEWORK")
+        print(f"{'='*50}\n")
+    
+    # Begin the iterative ReAct loop
+    for i in range(1, max_num_steps + 1):
+        n_calls += 1
+        
+        if verbose:
+            print(f"\n{'='*50}")
+            print(f"STEP {i}/{max_num_steps}")
+            print(f"{'='*50}")
+        
+        # Prompt the LLM for next thought and action
+        user_msg = f"""Thought {i}:
+
+After your thought, provide your next action in one of these EXACT formats:
+
+- Action {i}: InitialExploration
+- Action {i}: TimeBasedClustering  
+- Action {i}: TopologyBasedClustering
+- Action {i}: Reassess
+- Action {i}: Finish
+
+Or for reorganize actions:
+
+- Action {i}: Reorganize[Move alert 845907078 from unassigned to cluster_001]
+
+Or for multiple reorganization operations:
+
+- Action {i}: Reorganize[
+1. Move alert 845907078 from unassigned to cluster_001
+2. Create a new cluster with alerts 845907079, 845907080
+]
+
+Be sure to use the EXACT formatting shown above.
+"""
+        
+        self.react_messages.append({"role": "user", "content": user_msg})
+        
+        # Call the LLM
+        thought_action_response = self._llm(self.react_messages, stop=[f"\nObservation {i}:"])
+        assistant_text = thought_action_response["choices"][0]["message"]["content"]
+        
+        if to_print:
+            print(f"LLM Response {i}:\n{assistant_text}\n")
+        
+        # Extract thought and action using simple parsing
+        thought_str = ""
+        action_str = ""
+        
+        # Try to extract using standard format first
+        if f"\nAction {i}:" in assistant_text:
+            parts = assistant_text.split(f"\nAction {i}:")
+            thought_str = parts[0].strip()
+            action_str = parts[1].strip()
+        else:
+            # Fallback: look for "Action N:" pattern with any number
+            action_match = re.search(r'\nAction\s+\d+:\s*(.*)', assistant_text)
+            if action_match:
+                action_parts = assistant_text.split(action_match.group(0))
+                thought_str = action_parts[0].strip()
+                action_str = action_match.group(1).strip()
+            else:
+                # Second fallback: just take the first line as thought, the rest as action
+                lines = assistant_text.split('\n')
+                thought_str = lines[0].strip()
+                action_str = ' '.join(lines[1:]).strip()
+        
+        # Clean up the extracted action
+        action_str = action_str.strip()
+        if action_str.startswith('"') and action_str.endswith('"'):
+            action_str = action_str[1:-1].strip()
+        elif action_str.startswith("'") and action_str.endswith("'"):
+            action_str = action_str[1:-1].strip()
+        
+        if verbose:
+            print(f"• Extracted thought: {thought_str[:50]}...")
+            print(f"• Extracted action: {action_str}")
+        
+        # Record the thought and action in the conversation
+        self.react_messages.append({"role": "assistant", "content": f"Thought {i}: {thought_str}"})
+        self.react_messages.append({"role": "assistant", "content": f"Action {i}: {action_str}"})
+        
+        # Validate the action format
+        valid_action = False
+        
+        # Check if it's a valid action name
+        for prefix in self.valid_prefixes:
+            if action_str == prefix or action_str.startswith(f"{prefix}["):
+                valid_action = True
+                break
+        
+        if not valid_action:
+            # If invalid, provide feedback and continue to next iteration
+            obs_str = f"Invalid action: '{action_str}'. Valid actions are: {', '.join(self.valid_prefixes)}."
+            self.react_messages.append({"role": "system", "content": f"Observation {i}: {obs_str}"})
+            if to_print:
+                print(f"Observation {i}: {obs_str}")
+            
+            if verbose:
+                print(f"! Invalid action format detected")
+            
+            continue
+        
+        # Execute the action
+        try:
+            if verbose:
+                print(f"• Executing action: {action_str}")
+            
+            obs, r, done_flag, info = self._step(action_str, verbose=verbose)
+            
+            # Record the observation
+            obs_str = f"Observation {i}: {obs}"
+            self.react_messages.append({"role": "system", "content": obs_str})
+            
+            if to_print:
+                print(f"Thought {i}: {thought_str}")
+                print(f"Action {i}: {action_str}")
+                print(f"Observation {i}: {obs}\n")
+            
+            # Check if we're done
+            if done_flag:
+                if verbose:
+                    print(f"• Episode completed at step {i}")
+                done = True
+                break
+                
+        except Exception as e:
+            # Handle any errors during execution
+            error_msg = f"Error executing action: {str(e)}"
+            self.react_messages.append({"role": "system", "content": f"Observation {i}: {error_msg}"})
+            if to_print:
+                print(f"Observation {i}: {error_msg}")
+            
+            if verbose:
+                print(f"! Error during action execution: {str(e)}")
+                import traceback
+                traceback.print_exc()
+    
+    # If we run out of steps without finishing, force a finish
+    if not done:
+        try:
+            if verbose:
+                print(f"\n{'='*50}")
+                print(f"MAXIMUM STEPS REACHED - FORCING FINISH")
+                print(f"{'='*50}\n")
+            
+            obs, r, done_flag, info = self._step("Finish[]", verbose=verbose)
+            self.react_messages.append({"role": "system", "content": f"Observation Final: {obs}"})
+            done = True
+        except Exception as e:
+            # Handle errors during forced finish
+            error_msg = f"Error during forced finish: {str(e)}"
+            self.react_messages.append({"role": "system", "content": f"Observation Final: {error_msg}"})
+            
+            if verbose:
+                print(f"! Error during forced finish: {str(e)}")
+                import traceback
+                traceback.print_exc()
+    
+    if verbose:
+        print(f"\n{'='*50}")
+        print(f"REACT FRAMEWORK COMPLETED")
+        print(f"- Total calls: {n_calls}")
+        print(f"- Final state: {len(self.env.current_clusters['clusters'])} clusters, {len(self.env.current_clusters['unassigned_alerts'])} unassigned alerts")
+        print(f"{'='*50}\n")
+    
+    # Prepare return information
+    info = {
+        "n_calls": n_calls,
+        "traj": self.react_messages,
+        "clusters": self.env.current_clusters if hasattr(self.env, 'current_clusters') else None
+    }
+    
+    return 0, info  # Return 0 reward for simplicity
