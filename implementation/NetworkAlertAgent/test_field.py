@@ -1407,13 +1407,11 @@ Do not include any explanatory text, markdown formatting, or anything outside of
 def reorganize_complete_state(self, assessment_content, recommendation=None, temperature=0.01):
     """
     Request and implement a complete new clustering state based on assessment.
-    
-    Args:
-        assessment_content: The full content of the assessment
-        recommendation: The specific recommendation (optional)
     """
-    # Create message history for this function
-    history = self.function_histories.get("reorganize", [])
+    # Initialize history properly
+    if "reorganize" not in self.function_histories:
+        self.function_histories["reorganize"] = []
+    history = self.function_histories["reorganize"]
     
     # Extract specific instructions from recommendation if provided
     instructions = ""
