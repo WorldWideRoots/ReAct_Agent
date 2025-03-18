@@ -1290,3 +1290,114 @@ def assess_llm(self, temperature=0.01):
     elif action_name == "Reorganize":
     print("\n⚠️ WARNING: Agent attempted to use deprecated 'Reorganize' action directly.")
     observation = "Unknown action: Reorganize. Valid actions are: InitialExploration, TimeBasedClustering, TopologyBasedClustering, Reassess, Finish."
+
+
+
+    def _safe_json_parse(self, json_str):
+    """Safely parse JSON, handling common formatting issues."""
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"JSON parsing error: {e}")
+        print(f"First 100 chars: {json_str[:100]}...")
+        
+        # Try to fix common issues (only if needed)
+        try:
+            # Sometimes the response has Markdown formatting or other text before/after the JSON
+            # Try to extract just the JSON part using regex
+            import re
+            json_pattern = r'```json\s*([\s\S]*?)\s*```|```\s*([\s\S]*?)\s*```|(\{[\s\S]*\})'
+            json_match = re.search(json_pattern, json_str)
+            
+            if json_match:
+                for group in json_match.groups():
+                    if group:
+                        cleaned_json = group.strip()
+                        print(f"Found JSON match: {cleaned_json[:50]}...")
+                        return json.loads(cleaned_json)
+            
+            # If that didn't work, try a more aggressive approach
+            # Find the first { and the last }
+            start_idx = json_str.find('{')
+            end_idx = json_str.rfind('}')
+            
+            if start_idx >= 0 and end_idx > start_idx:
+                extracted_json = json_str[start_idx:end_idx+1]
+                print(f"Extracted JSON between braces: {extracted_json[:50]}...")
+                return json.loads(extracted_json)
+                
+            raise ValueError("Could not extract valid JSON")
+        except Exception as inner_e:
+            print(f"Failed to recover JSON: {inner_e}")
+            # Return the previous clustering state instead of raising an exception
+            return self.current_clusters
+        
+
+
+def topology_based_clustering_llm(self, temperature=0.01):
+    """
+    Perform topology-based clustering on the current batch of alerts.
+    Uses a dedicated history for this function and creates a summary for the ReAct framework.
+    """
+    # [Keep existing setup code]
+    
+    # Call the LLM
+    reply = self._llm(history, response_format={"type": "json_object"}, temperature=temperature, model=self.llm_model)
+    
+    # Check for the response validity
+    if 'choices' in reply and len(reply['choices']) > 0:
+        response_content = reply['choices'][0]['message']['content']
+        history.append({"role": "assistant", "content": response_content})
+        self.function_histories["topology_based_clustering"] = history
+        
+        # Store response in recent reasoning
+        self.recent_reasoning["topology_based_clustering"] = response_content
+        
+        # Parse clusters from response with safer parsing
+        try:
+            # Use safe JSON parsing
+            parsed_clusters = self._safe_json_parse(response_content)
+            
+            # Only update if parsing succeeded
+            if parsed_clusters:
+                # Ensure consistent format
+                if "clusters" in parsed_clusters:
+                    for cluster in parsed_clusters["clusters"]:
+                        if "alert_ids" in cluster:
+                            cluster["alert_ids"] = self._ensure_list_format(cluster["alert_ids"])
+                
+                if "unassigned_alerts" in parsed_clusters:
+                    parsed_clusters["unassigned_alerts"] = self._ensure_list_format(parsed_clusters["unassigned_alerts"])
+                
+                self.current_clusters = parsed_clusters
+            else:
+                print("Warning: Could not parse topology clustering results, keeping previous state")
+                
+        except Exception as e:
+            print(f"Failed to load the clusters: {e}")
+            print("Keeping previous clustering state")
+            # Don't update current_clusters if parsing fails
+        
+        # Create a summary for the ReAct framework
+        summary = self._create_clustering_summary(
+            "topology_based_clustering", 
+            self.current_clusters,
+            response_content
+        )
+        
+        # Add to ReAct history
+        self.react_history.append({
+            "action": "TopologyBasedClustering",
+            "summary": summary
+        })
+    else:
+        print("Invalid response from API")
+    
+    return reply
+
+
+# Add this to the user message in topology_based_clustering_llm, time_based_clustering_llm, and initial_exploration
+"""
+IMPORTANT: Your response MUST be ONLY valid JSON in the specified format. 
+Do not include any explanatory text, markdown formatting, or anything outside of the JSON object.
+"""
