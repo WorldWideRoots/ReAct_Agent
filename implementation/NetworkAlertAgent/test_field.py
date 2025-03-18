@@ -1401,3 +1401,166 @@ def topology_based_clustering_llm(self, temperature=0.01):
 IMPORTANT: Your response MUST be ONLY valid JSON in the specified format. 
 Do not include any explanatory text, markdown formatting, or anything outside of the JSON object.
 """
+
+
+
+def reorganize_complete_state(self, assessment_content, recommendation=None, temperature=0.01):
+    """
+    Request and implement a complete new clustering state based on assessment.
+    
+    Args:
+        assessment_content: The full content of the assessment
+        recommendation: The specific recommendation (optional)
+    """
+    # Create message history for this function
+    history = self.function_histories.get("reorganize", [])
+    
+    # Extract specific instructions from recommendation if provided
+    instructions = ""
+    if recommendation and recommendation.startswith("Reorganize["):
+        instructions = recommendation[len("Reorganize["):-1].strip()
+    
+    # Create a system message explaining the task
+    system_message = """
+    You are a network alert clustering expert. Your task is to create a complete new clustering state based 
+    on the assessment provided. Output the entire clustering as a valid JSON object that can be directly used 
+    to replace the current clusters.
+    
+    IMPORTANT: Ensure ALL alerts from the original state are included in your new state, either in clusters or as unassigned.
+    DO NOT lose any alerts during reorganization. Your output must contain exactly the same set of alert IDs as the input.
+    """
+    
+    # Create a user message with the assessment and request for complete clustering
+    user_message = f"""
+    Here is an assessment of the current alert clusters:
+    
+    {assessment_content}
+    
+    Based on this assessment, provide the complete new state of all clusters and unassigned alerts.
+    {f"Specifically implement these changes: {instructions}" if instructions else ""}
+    
+    Output the result as a valid JSON object with the following structure:
+    
+    {{
+      "clusters": [
+        {{
+          "cluster_id": "cluster_001",
+          "chains of thoughts": "Reasoning behind this cluster",
+          "source_ids": "source device IDs",
+          "alert_ids": [list of alert IDs that should be in this cluster],
+          "severity": "severity level",
+          "time": {{"start": timestamp, "end": timestamp}},
+          "confidence": confidence value,
+          "Description": "Description of the cluster"
+        }},
+        // Additional clusters...
+      ],
+      "unassigned_alerts": [list of alert IDs that should remain unassigned]
+    }}
+    
+    Ensure ALL alerts from the original state are included in your output, either in clusters or as unassigned.
+    Your output must be ONLY valid JSON with no additional text or explanation.
+    """
+    
+    # Prepare messages
+    messages = [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": user_message}
+    ]
+    
+    # Add to history
+    history += messages
+    self.function_histories["reorganize"] = history
+    
+    # Call the LLM with JSON response format
+    reply = self._llm(history, response_format={"type": "json_object"}, temperature=temperature, model=self.llm_model)
+    
+    # Process the response
+    if 'choices' in reply and len(reply['choices']) > 0:
+        clustering_json = reply['choices'][0]['message']['content']
+        history.append({"role": "assistant", "content": clustering_json})
+        self.function_histories["reorganize"] = history
+        
+        try:
+            # Save the old state for reporting changes and validation
+            old_state = {
+                "num_clusters": len(self.current_clusters["clusters"]),
+                "num_unassigned": len(self._ensure_list_format(self.current_clusters["unassigned_alerts"]))
+            }
+            
+            # Get the complete set of alert IDs from current state
+            current_alert_ids = set()
+            # Add alert IDs from clusters
+            for cluster in self.current_clusters["clusters"]:
+                if "alert_ids" in cluster:
+                    alert_ids = self._ensure_list_format(cluster["alert_ids"])
+                    current_alert_ids.update(alert_ids)
+            # Add unassigned alert IDs
+            current_alert_ids.update(self._ensure_list_format(self.current_clusters["unassigned_alerts"]))
+            
+            # Parse and validate the new clustering
+            new_clusters = json.loads(clustering_json)
+            
+            # Ensure proper format of alert_ids
+            if "clusters" in new_clusters:
+                for cluster in new_clusters["clusters"]:
+                    if "alert_ids" in cluster:
+                        cluster["alert_ids"] = self._ensure_list_format(cluster["alert_ids"])
+            
+            if "unassigned_alerts" in new_clusters:
+                new_clusters["unassigned_alerts"] = self._ensure_list_format(new_clusters["unassigned_alerts"])
+            else:
+                new_clusters["unassigned_alerts"] = []
+            
+            # Verify all alerts are accounted for
+            new_alert_ids = set()
+            # Add alert IDs from new clusters
+            for cluster in new_clusters.get("clusters", []):
+                if "alert_ids" in cluster:
+                    new_alert_ids.update(cluster["alert_ids"])
+            # Add new unassigned alert IDs
+            new_alert_ids.update(new_clusters.get("unassigned_alerts", []))
+            
+            # Check for missing alerts
+            missing_alerts = current_alert_ids - new_alert_ids
+            if missing_alerts:
+                print(f"Warning: {len(missing_alerts)} alerts were not included in the new clustering state")
+                print(f"Missing alerts: {missing_alerts}")
+                # Add missing alerts to unassigned
+                new_clusters["unassigned_alerts"] = list(new_clusters.get("unassigned_alerts", [])) + list(missing_alerts)
+                print(f"Added missing alerts to unassigned")
+            
+            # Check for extra alerts (shouldn't happen, but for completeness)
+            extra_alerts = new_alert_ids - current_alert_ids
+            if extra_alerts:
+                print(f"Warning: {len(extra_alerts)} extra alerts that weren't in the original state")
+                # We could remove them, but it might be better to keep them in case they're valid
+            
+            # Replace current clusters with new clusters
+            self.current_clusters = new_clusters
+            
+            # Calculate the new state
+            new_state = {
+                "num_clusters": len(self.current_clusters["clusters"]),
+                "num_unassigned": len(self._ensure_list_format(self.current_clusters["unassigned_alerts"]))
+            }
+            
+            # Create summary of changes
+            operations_summary = [
+                f"Complete reorganization: {old_state['num_clusters']} → {new_state['num_clusters']} clusters, {old_state['num_unassigned']} → {new_state['num_unassigned']} unassigned alerts"
+            ]
+            
+            # Add to ReAct history
+            self.react_history.append({
+                "action": "Reorganize",
+                "summary": f"Complete cluster reorganization: {new_state['num_clusters']} clusters, {new_state['num_unassigned']} unassigned"
+            })
+            
+            return operations_summary
+            
+        except Exception as e:
+            error_msg = f"Error applying new clustering state: {str(e)}"
+            print(f"\n!!! ERROR: {error_msg}")
+            return [f"Error: {error_msg}"]
+    
+    return ["No valid clustering data received"]
