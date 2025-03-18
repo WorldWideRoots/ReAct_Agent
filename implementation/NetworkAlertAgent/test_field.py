@@ -1203,16 +1203,90 @@ def step(self, action, verbose=False):
     # [Rest of the function remains unchanged]
 
 
-    ## Available Actions:
-    
+## Available Actions:
+
 1. InitialExploration - Perform initial clustering on the current batch of alerts.
+   You can simply write "InitialExploration" (no parameters needed)
    
 2. TimeBasedClustering - Cluster alerts based on temporal relationships.
+   You can simply write "TimeBasedClustering" (no parameters needed)
    
 3. TopologyBasedClustering - Cluster alerts based on network topology relationships.
+   You can simply write "TopologyBasedClustering" (no parameters needed)
    
 4. Reassess - Evaluate current clusters and provide recommendations.
-   If you recommend reorganization, the system will automatically implement it by
-   creating a complete new clustering state based on your assessment.
+   You can simply write "Reassess" (no parameters needed)
+   IMPORTANT: If you recommend reorganization, the system will automatically implement those changes.
+   You do NOT need to follow up with separate reorganization actions.
    
 5. Finish - Complete the analysis and provide a final assessment.
+   You can simply write "Finish" (no parameters needed)
+
+
+
+def assess_llm(self, temperature=0.01):
+    """
+    Evaluate current clusters and provide recommendations.
+    If reorganization is recommended, it is automatically applied.
+    """
+    # [Existing code to prepare data and call LLM]
+    
+    # After getting LLM response
+    if 'choices' in reply and len(reply['choices']) > 0:
+        response_content = reply['choices'][0]['message']['content']
+        history.append({"role": "assistant", "content": response_content})
+        self.function_histories["assess"] = history
+        
+        # Store response in recent reasoning
+        self.recent_reasoning["assess"] = response_content
+        
+        # Extract recommendation using the _extract_recommendation method
+        recommendation = self._extract_recommendation(response_content)
+        
+        # Create a summary for the ReAct framework
+        summary = f"Assessment:\n- Evaluated {num_clusters} clusters and {num_unassigned} unassigned alerts\n"
+        summary += f"- Recommended: {recommendation}\n"
+        
+        # Check if reorganization is recommended
+        if recommendation.startswith("Reorganize["):
+            print(f"Detected reorganization recommendation: {recommendation}")
+            # Call reorganize_complete_state with the assessment content
+            try:
+                operations = self.reorganize_complete_state(response_content, recommendation)
+                
+                # Update the response to indicate reorganization was performed
+                response_content += "\n\n## Reorganization Automatically Applied:\n"
+                for op in operations:
+                    response_content += f"- {op}\n"
+                
+                # Update summary
+                summary += "- Reorganization automatically applied\n"
+                
+                # Create modified result to return
+                observation = f"Assessment completed with automatic reorganization. Now have {len(self.current_clusters['clusters'])} clusters and {len(self.current_clusters['unassigned_alerts'])} unassigned alerts.\n\n{response_content}"
+                modified_reply = {"choices": [{"message": {"content": observation}}]}
+                
+                # Add to ReAct history
+                self.react_history.append({
+                    "action": "Reassess",
+                    "summary": summary
+                })
+                
+                return modified_reply, history
+            except Exception as e:
+                print(f"Error in automatic reorganization: {str(e)}")
+                # Continue without reorganization if it fails
+        
+        # Add to ReAct history (for non-reorganization cases)
+        self.react_history.append({
+            "action": "Reassess",
+            "summary": summary
+        })
+        
+        return reply, history
+    
+
+
+    elif action_name == "Reorganize":
+    print("\n⚠️ WARNING: Agent attempted to use deprecated 'Reorganize' action directly.")
+    observation = "Unknown action: Reorganize. Valid actions are: InitialExploration, TimeBasedClustering, TopologyBasedClustering, Reassess, Finish."
