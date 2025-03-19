@@ -485,3 +485,109 @@ class APEnv(NetworkEnv):
             return data
         except Exception as e:
             return {"error": f"get_wireless_ap_config failed for {mac_address}: {str(e)}"}
+
+
+
+class APEnv(NetworkEnv):
+
+    def __init__(self, login_tokens={}):
+
+        super().__init__(login_tokens)
+
+        self.current_device_info = None
+
+   
+
+    def reset(self, device_info=None, *args, **kwargs):
+
+        observation = super().reset(*args, **kwargs)
+
+        self.current_device_info=device_info
+
+        return observation
+
+ 
+
+    def step(self, action):
+
+        reward = 0
+
+        done = False
+
+        action = action.strip()
+
+        if self.answer is not None:
+
+            done = True
+
+            return self.obs, reward, done, self._get_info()
+
+        if action.startswith("GetDeviceInfo[") and action.endswith("]"):
+
+            device_id = action[len("GetDeviceInfo["):-1]
+
+            print(f'this is the device ID: {device_id}')
+
+            device_info  = self.get_dnac_devices_detail_by_id(device_name=device_id)
+
+            self.current_device_info = device_info
+
+            self.current_device = device_info['nwDeviceName']
+
+            self.obs = device_info
+
+        elif action.startswith("GetDeviceConfig[") and action.endswith("]"):
+
+            device_id = action[len("GetDeviceConfig["):-1]
+
+            device_info  = self.get_dnac_devices_detail_by_id(device_name=device_id)
+
+            self.current_device_info = device_info
+
+            self.current_device = device_info['nwDeviceName']
+
+            self.obs = self.get_dnac_AP_config(ethernet_macAddress=device_info['ethernetMac'])         
+
+        elif action.startswith("Get1hrEventsForDevice[") and action.endswith("]"):
+
+            device_id = action[len("Get1hrEventsForDevice["):-1]
+
+            self.obs = self.get_device_events_in_past_1hr(device_name=device_id)
+
+        elif action.startswith("Get2dayEventsForDevice[") and action.endswith("]"):
+
+            device_id = action[len("Get2dayEventsForDevice["):-1]
+
+            self.obs = self.get_device_events_in_past_2d(device_name=device_id)
+
+        elif action.startswith("Finish[") and action.endswith("]"):
+
+            summary = action[len("Finish["):-1]
+
+            self.answer = summary
+
+            done = True
+
+            self.obs = f"Episode finished, reward = {reward}\n"
+
+        else:
+
+            self.obs = f"Invalid action: {action}"
+
+        self.steps += 1
+
+        self.action_results.append({"action": action, "observation": self.obs})
+
+        return self.obs, reward, done, self._get_info()
+
+       
+
+    def get_device_events_in_past_1hr(self, device_name):
+
+        return self.get_dnac_devices_events_by_id(start_time=int((self.timestamp-3600000)), end_time=int(self.timestamp), device_name=device_name, limit=20)
+
+   
+
+    def get_device_events_in_past_2d(self, device_name):
+
+        return self.get_dnac_devices_events_by_id(start_time=int((self.timestamp-172800000)), end_time=int(self.timestamp), device_name=device_name, limit=20)
