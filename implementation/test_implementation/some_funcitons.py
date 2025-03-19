@@ -165,3 +165,116 @@ def _react(self, initial_prompt:str, max_num_steps:int=8, to_print:bool=False):
         print(f"DEBUG: Final info: {info}")
 
     return r, info
+
+
+
+# Save as react_demo.py and run with: streamlit run react_demo.py
+import streamlit as st
+import json
+import pandas as pd
+
+def create_streamlit_demo(info_path):
+    """
+    Create a Streamlit demo from saved React output.
+    
+    Parameters:
+    -----------
+    info_path : str
+        Path to a JSON file containing the info dict output
+    """
+    with open(info_path, 'r') as f:
+        info = json.load(f)
+    
+    st.title("ReAct Network Diagnosis Demo")
+    
+    # Display device details from first observation
+    for msg in info['traj']:
+        if msg["role"] == "system" and msg["content"].startswith("Observation 1:"):
+            try:
+                device_info = json.loads(msg["content"][len("Observation 1:"):].strip())
+                st.subheader("Device Information")
+                
+                # Display key device info
+                cols = st.columns(3)
+                cols[0].metric("Device Name", device_info.get('nwDeviceName', 'N/A'))
+                cols[1].metric("Status", "UP" if device_info.get('connectivityStatus', 0) > 0 else "DOWN")
+                cols[2].metric("Health Score", device_info.get('overallHealth', 'N/A'))
+                
+                # More details in expander
+                with st.expander("View All Device Details"):
+                    st.json(device_info)
+            except:
+                pass
+            break
+    
+    # Create step-by-step analysis
+    st.subheader("Diagnostic Steps")
+    
+    steps = []
+    current_step = {}
+    step_num = 0
+    
+    for msg in info['traj'][1:]:  # Skip system prompt
+        role = msg["role"]
+        content = msg["content"]
+        
+        if role == "user" and content.startswith("Thought"):
+            # New step starts
+            if current_step and 'thought' in current_step:
+                steps.append(current_step)
+            step_num += 1
+            current_step = {'step': step_num}
+        
+        elif role == "assistant" and content.startswith("Thought"):
+            thought_content = content[content.find(':')+1:].strip()
+            current_step['thought'] = thought_content
+        
+        elif role == "assistant" and content.startswith("Action"):
+            action_content = content[content.find(':')+1:].strip()
+            current_step['action'] = action_content
+        
+        elif role == "system" and content.startswith("Observation"):
+            obs_content = content[content.find(':')+1:].strip()
+            current_step['observation'] = obs_content
+            current_step['error'] = "Invalid action" in content
+    
+    # Add the last step if exists
+    if current_step and 'thought' in current_step:
+        steps.append(current_step)
+    
+    # Display steps
+    for step in steps:
+        with st.expander(f"Step {step['step']}: {step.get('action', 'Analysis')[:50]}...", expanded=True):
+            st.markdown("#### Thought Process")
+            st.write(step.get('thought', 'N/A'))
+            
+            st.markdown("#### Action")
+            st.code(step.get('action', 'N/A'))
+            
+            st.markdown("#### Observation")
+            if step.get('error', False):
+                st.error(step.get('observation', 'N/A'))
+            else:
+                try:
+                    # Try to parse as JSON for better formatting
+                    json_data = json.loads(step.get('observation', '{}'))
+                    st.json(json_data)
+                except:
+                    st.success(step.get('observation', 'N/A'))
+    
+    # Display final diagnosis
+    for msg in info['traj']:
+        if msg["role"] == "system" and msg["content"].startswith("Observation End:"):
+            final_result = msg["content"][len("Observation End:"):].strip()
+            st.subheader("Final Diagnosis")
+            st.info(final_result)
+            break
+
+# Run the demo with your saved output
+if __name__ == "__main__":
+    create_streamlit_demo("react_output.json")
+
+import json
+# After running _react
+with open('react_output.json', 'w') as f:
+    json.dump(info, f)
