@@ -8,11 +8,11 @@ import gym
 
 class NetworkAgent:
     """
-    A completely redesigned NetworkAgent that implements the ReAct paradigm
+    Improved NetworkAgent that implements the ReAct paradigm
     for interacting with network environments using LLMs.
     """
     
-    def __init__(self, env: Union[gym.Wrapper, gym.Env], valid_actions=None):
+    def __init__(self, env: Union[gym.Wrapper, gym.Env], valid_prefixes=None):
         """
         Initialize the NetworkAgent.
         
@@ -20,19 +20,21 @@ class NetworkAgent:
         -----------
         env : gym.Env
             The environment to interact with
-        valid_actions : list
+        valid_prefixes : list
             List of valid action prefixes (e.g., 'GetDeviceInfo', 'Finish', etc.)
         """
         self.env = env
-        self.valid_actions = valid_actions or []
+        self.valid_prefixes = valid_prefixes or []
         
-    def set_valid_actions(self, valid_actions: list):
+    def set_valid_prefixes(self, valid_prefixes: list):
         """Set the list of valid action prefixes."""
-        self.valid_actions = valid_actions
+        self.valid_prefixes = valid_prefixes
         
-    def reset_env(self, *args, **kwargs):
+    def reset_env(self, valid_prefixes: list = None, *args, **kwargs):
         """Reset the environment with specified arguments."""
-        return self.env.reset(*args, **kwargs)
+        self.env.reset(*args, **kwargs)
+        if valid_prefixes is not None:
+            self.valid_prefixes = valid_prefixes
     
     def _llm(self, messages, stop=None, *args, **kwargs):
         """
@@ -49,6 +51,36 @@ class NetworkAgent:
                 }
             }]
         }
+    
+    def _step(self, action):
+        """
+        Execute an action in the environment with retry logic.
+        
+        Parameters:
+        -----------
+        action : str
+            The action to execute
+            
+        Returns:
+        --------
+        tuple: (observation, reward, done, info)
+        """
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                return self.env.step(action)
+            except requests.exceptions.Timeout:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    raise Exception(f"Max retry attempts reached for action: {action}")
+            except Exception as e:
+                print(f"Error executing action: {e}")
+                # Return a formatted error message as the observation
+                return f"Error: {str(e)}", 0, False, {}
     
     def extract_action(self, text, step_number):
         """
@@ -94,7 +126,7 @@ class NetworkAgent:
             return general_match.group(1).strip()
             
         # If still no match, look for known command keywords
-        for prefix in self.valid_actions:
+        for prefix in self.valid_prefixes:
             keyword_pattern = rf"{prefix}\[[^\]]*\]"
             keyword_match = re.search(keyword_pattern, text, re.DOTALL)
             if keyword_match:
@@ -163,7 +195,7 @@ class NetworkAgent:
             return f'Finish["{content}"]'
             
         # Handle other actions without proper bracket format
-        for prefix in self.valid_actions:
+        for prefix in self.valid_prefixes:
             if action_text.startswith(prefix) and '[' not in action_text:
                 # If there's content after the prefix, put it in brackets
                 content = action_text[len(prefix):].strip()
@@ -184,10 +216,10 @@ class NetworkAgent:
             command = match.group(1)
             param = match.group(2) if match.group(2) else ""
             
-            # Check if this is a close match to a valid action
-            for valid_action in self.valid_actions:
-                if self.string_similarity(command, valid_action) > 0.7:  # Threshold for similarity
-                    return f"{valid_action}[{param}]"
+            # Check if this is a close match to a valid prefix
+            for valid_prefix in self.valid_prefixes:
+                if self.string_similarity(command, valid_prefix) > 0.7:  # Threshold for similarity
+                    return f"{valid_prefix}[{param}]"
                     
         # No fixes needed or possible, return as is
         return action_text
@@ -233,7 +265,7 @@ class NetworkAgent:
             return False
             
         # Must start with a valid prefix
-        for prefix in self.valid_actions:
+        for prefix in self.valid_prefixes:
             if action.startswith(prefix + '['):
                 # There must be something inside the brackets (can be empty string)
                 bracket_content = action[len(prefix) + 1:-1]
@@ -241,350 +273,149 @@ class NetworkAgent:
                 
         return False
     
-    def execute_action(self, action):
+    def _react(self, initial_prompt, max_num_steps=8, to_print=False):
         """
-        Execute an action in the environment with retry logic.
-        
-        Parameters:
-        -----------
-        action : str
-            The action to execute
-            
-        Returns:
-        --------
-        tuple: (observation, reward, done, info)
-        """
-        max_retries = 3
-        retry_delay = 1
-        
-        for attempt in range(max_retries):
-            try:
-                return self.env.step(action)
-            except requests.exceptions.Timeout:
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    raise Exception(f"Max retry attempts reached for action: {action}")
-            except Exception as e:
-                print(f"Error executing action: {e}")
-                # Return a formatted error message as the observation
-                return f"Error: {str(e)}", 0, False, {}
-    
-    def diagnose_one(self, device_name, max_steps=8, to_print=True, **env_kwargs):
-        """
-        Diagnose a network device using the ReAct paradigm.
-        
-        Parameters:
-        -----------
-        device_name : str
-            The name of the device to diagnose
-        max_steps : int
-            Maximum number of steps for the ReAct loop
-        to_print : bool
-            Whether to print diagnostic steps
-        env_kwargs : dict
-            Additional keyword arguments for environment reset
-            
-        Returns:
-        --------
-        dict: Diagnosis information including trajectory and conclusion
-        """
-        # Get the instruction prompt
-        instruction = self._get_instruction()
-        
-        # Add the device to be diagnosed
-        instruction += f"\n\nDevice to be diagnosed: {device_name}\n"
-        
-        # Reset the environment
-        env_kwargs['device_name'] = device_name
-        observation = self.reset_env(**env_kwargs)
-        
-        # Run the ReAct loop
-        result = self.react(
-            initial_prompt=instruction,
-            max_steps=max_steps,
-            to_print=to_print
-        )
-        
-        # Extract the diagnosis from result
-        diagnosis = self.env._get_info().get("answer", "No diagnosis provided")
-        
-        return {
-            "device_name": device_name,
-            "diagnosis": diagnosis,
-            "steps": self.env.steps,
-            "trajectory": result.get("trajectory", [])
-        }
-    
-    def _get_instruction(self):
-        """
-        Get the instruction prompt for the agent.
-        This should be implemented in a subclass.
-        """
-        return ""
-    
-    def react(self, initial_prompt, max_steps=8, to_print=False):
-        """
-        Execute the ReAct loop with the LLM.
+        Improved _react method with better action parsing and error handling.
         
         Parameters:
         -----------
         initial_prompt : str
             The system prompt containing instructions
-        max_steps : int
+        max_num_steps : int
             Maximum number of steps to execute
         to_print : bool
             Whether to print the steps for debugging
             
         Returns:
         --------
-        dict: Results including trajectory and stats
+        tuple: (reward, info) where info contains trajectory and stats
         """
         # Initialize conversation with system prompt
         messages = [{"role": "system", "content": initial_prompt}]
         
         # Initialize statistics
-        stats = {
-            "steps": 0,
-            "valid_actions": 0,
-            "invalid_actions": 0,
-            "parse_failures": 0
-        }
-        
-        # Trajectory to return
-        trajectory = []
-        
-        # Flag to track if we're done
+        n_calls = 0
+        n_badcalls = 0
         done = False
         
         # Execute steps
-        for i in range(1, max_steps + 1):
-            # Increment step counter
-            stats["steps"] += 1
+        for i in range(1, max_num_steps + 1):
+            # Increment call counter
+            n_calls += 1
             
             # Ask for thought
             user_msg = f"Thought {i}:"
             messages.append({"role": "user", "content": user_msg})
             
             # Get LLM response
-            llm_response = self._llm(messages, stop=[f"Observation {i}:"])
-            response_text = llm_response["choices"][0]["message"]["content"]
-            
-            # Print raw response for debugging
-            if to_print:
-                print(f"Raw LLM response: {response_text}")
-            
-            # Extract thought and action
-            thought = self.extract_thought(response_text, i)
-            action = self.extract_action(response_text, i)
-            
-            # Add to messages
-            messages.append({"role": "assistant", "content": f"Thought {i}: {thought}"})
-            
-            # If no action extracted, ask again specifically for the action
-            if not action:
-                stats["parse_failures"] += 1
-                action_prompt = f"Based on your thought, what specific action should be taken? Please respond with 'Action {i}:' followed by one of these commands: {', '.join([f'{a}[...]' for a in self.valid_actions])}."
-                messages.append({"role": "user", "content": action_prompt})
-                retry_response = self._llm(messages)
-                retry_text = retry_response["choices"][0]["message"]["content"]
-                action = self.extract_action(retry_text, i)
+            try:
+                llm_response = self._llm(messages, stop=[f"Observation {i}:"])
+                response_text = llm_response["choices"][0]["message"]["content"]
                 
-                if not action:
-                    # Still no action, provide a default based on the current step
-                    if i == 1:
-                        default_action = f"GetDeviceInfo[{self.env.current_device}]"
-                    else:
-                        default_action = f"Finish[Unable to determine root cause. Please investigate manually.]"
-                    
-                    action = default_action
-                    messages.append({"role": "system", "content": f"No valid action found. Using default: {action}"})
-            
-            # Add action to messages
-            messages.append({"role": "assistant", "content": f"Action {i}: {action}"})
-            
-            # Validate the action
-            if self.validate_action(action):
-                stats["valid_actions"] += 1
-                
-                # Execute the action
-                observation, reward, done_flag, info = self.execute_action(action)
-                
-                # Format the observation
-                if isinstance(observation, dict) or isinstance(observation, list):
-                    observation_text = json.dumps(observation, indent=2)
-                else:
-                    observation_text = str(observation)
-                    
-                # Add observation to messages
-                observation_msg = f"Observation {i}: {observation_text}"
-                messages.append({"role": "system", "content": observation_msg})
-                
-                # Update trajectory
-                trajectory.append({
-                    "step": i,
-                    "thought": thought,
-                    "action": action,
-                    "observation": observation_text
-                })
-                
-                # Print for debugging
+                # Print raw response for debugging
                 if to_print:
-                    print(f"Thought {i}: {thought}")
-                    print(f"Action {i}: {action}")
-                    print(f"Observation {i}: {observation_text}\n")
+                    print(f"Raw LLM response: {response_text}")
+                
+                # Extract thought and action
+                thought_str = self.extract_thought(response_text, i)
+                action_str = self.extract_action(response_text, i)
+                
+                # Add thought to messages
+                messages.append({"role": "assistant", "content": f"Thought {i}: {thought_str}"})
+                
+                # If no action extracted, try to get it explicitly
+                if not action_str:
+                    n_badcalls += 1
+                    action_request_msg = f"Based on your thought, what specific action do you want to take? Please respond with 'Action {i}:' followed by one of: {', '.join([f'{a}[...]' for a in self.valid_prefixes])}"
+                    messages.append({"role": "user", "content": action_request_msg})
+                    retry_response = self._llm(messages)
+                    retry_text = retry_response["choices"][0]["message"]["content"]
+                    action_str = self.extract_action(retry_text, i)
+                    
+                    if not action_str:
+                        # Still no action, use a default based on the environment
+                        if i == 1:
+                            action_str = f"GetDeviceInfo[{self.env.current_device or 'unknown'}]"
+                        else:
+                            action_str = "Finish[Unable to determine the issue with the available information. Please check manually.]"
+                        
+                # Add action to messages
+                messages.append({"role": "assistant", "content": f"Action {i}: {action_str}"})
+                
+                # Validate the action
+                if self.validate_action(action_str):
+                    # Execute the action
+                    try:
+                        obs, r, done_flag, info = self._step(action_str)
+                        
+                        # Format the observation
+                        if isinstance(obs, (dict, list)):
+                            obs_str = f"Observation {i}: {json.dumps(obs, indent=2)}"
+                        else:
+                            obs_str = f"Observation {i}: {obs}"
+                            
+                        # Print for debugging
+                        if to_print:
+                            print(f"Thought {i}: {thought_str}")
+                            print(f"Action {i}: {action_str}")
+                            print(f"{obs_str}\n")
+                            
+                    except Exception as e:
+                        # Handle execution errors
+                        obs_str = f"Observation {i}: Error executing action: {str(e)}"
+                        done_flag = False
+                        r = 0
+                        info = {}
+                        
+                        if to_print:
+                            print(f"Action execution error: {e}")
+                else:
+                    # Invalid action
+                    example_actions = [f"{prefix}[example_param]" for prefix in self.valid_prefixes]
+                    obs_str = f"Observation {i}: Invalid action format: '{action_str}'. Please use one of the following formats: {example_actions}"
+                    done_flag = False
+                    r = 0
+                    info = {}
+                    
+                    if to_print:
+                        print(f"{obs_str}")
+                
+                # Add observation to conversation
+                messages.append({"role": "system", "content": obs_str})
                 
                 # Check if we're done
                 if done_flag:
                     done = True
                     break
-            else:
-                # Invalid action
-                stats["invalid_actions"] += 1
-                
-                # Provide feedback on expected format
-                example_actions = ", ".join([f"{prefix}[param]" for prefix in self.valid_actions])
-                error_msg = f"Observation {i}: Invalid action format: '{action}'. Please use one of: {example_actions}"
-                messages.append({"role": "system", "content": error_msg})
-                
-                if to_print:
-                    print(f"Invalid action: {action}")
-                    print(f"Error message: {error_msg}\n")
+                    
+            except Exception as e:
+                # Handle any unexpected errors in the LLM or processing
+                n_badcalls += 1
+                print(f"Error in step {i}: {e}")
+                messages.append({"role": "system", "content": f"Error: {str(e)}"})
         
         # If we hit max steps without finishing, force a conclusion
-        if not done and stats["steps"] >= max_steps:
-            force_action = f"Finish[Diagnosis incomplete within {max_steps} steps. Based on available information: issue appears to be related to connectivity or configuration.]"
-            observation, reward, done_flag, info = self.execute_action(force_action)
-            
-            messages.append({"role": "system", "content": f"Max steps reached. Forced conclusion: {force_action}"})
-            messages.append({"role": "system", "content": f"Observation Final: {observation}"})
-            
-            trajectory.append({
-                "step": stats["steps"] + 1,
-                "thought": "Maximum steps reached without conclusion.",
-                "action": force_action,
-                "observation": str(observation)
-            })
+        if not done:
+            force_finish_action = f"Finish[No conclusion within {max_num_steps} steps. Suggest manual follow-up.]"
+            try:
+                obs, r, done_flag, info = self._step(force_finish_action)
+                messages.append({"role": "system", "content": f"Observation End: {obs}"})
+            except Exception as e:
+                messages.append({"role": "system", "content": f"Observation End: Error in final step: {str(e)}"})
+                info = {}
+                r = 0
         
-        # Return results
-        return {
-            "trajectory": trajectory,
-            "messages": messages,
-            "stats": stats
-        }
-
-
-class APAnalystAgent(NetworkAgent):
-    """
-    Specialized NetworkAgent for analyzing Access Points.
-    """
-    def __init__(self, env):
-        valid_actions = [
-            "GetDeviceInfo",
-            "GetDeviceConfig",
-            "Get1hrEventsForDevice",
-            "Get2dayEventsForDevice",
-            "Finish"
-        ]
-        super().__init__(env, valid_actions)
-    
-    def _get_instruction(self):
-        """
-        Get the specialized instruction prompt for AP analysis.
-        """
-        return """
-You are an advanced network engineer tasked with diagnosing and analyzing potential issues for Access Points (APs). Your objective is to identify any potential issues and to evaluate the condition/health/status of the Cisco Access Points.
-
-You will diagnose network devices using interleaving Thought, Action, and Observation steps. Thought can reason about the current situation, which leads to an action. And the action will return an observation, which you will reason and think about for insights that lead to next action.
-
-Action can be one of the following types:
-
-1. GetDeviceInfo[device_name]
-   - Retrieves basic data about the device (AP or WLC).
-   - Returns JSON with fields like:
-     - "nwDeviceName"
-     - "connectivityStatus" (<=0 ⇒ device is DOWN, >0 ⇒ device is UP)
-     - "ipAddress"
-     - "softwareVersion"
-     - "location"
-     - "ethernetMac"
-
-2. GetDeviceConfig[device_name]
-   - Retrieves the AP's wireless configuration (radio frequency info, SSIDs, etc.).
-   - Also reveals the controller that this AP is connected to, if any.
-
-3. Get1hrEventsForDevice[device_name]
-   - Retrieves the last 1 hour's assurance events (AP_DOWN, AUTH_FAILURES, etc.).
-
-4. Get2dayEventsForDevice[device_name]
-   - Retrieves the last 2 days' assurance events.
-
-5. Finish[summary]
-   - Ends the diagnostic session with an actionable recommendation.
-
-ReAct Format:
-- "Thought X": your chain-of-thought reasoning.
-- "Action X": one of the five actions above with exact syntax.
-- "Observation X": the environment's returned JSON/text.
-
-Key Points:
-- If you suspect the AP's controller might be relevant, first call GetDeviceConfig[theAP] to learn controllerName, then call GetDeviceInfo[thatControllerName] if needed.
-- If connectivityStatus <= 0 in GetDeviceInfo, that device is effectively DOWN.
-- You can do up to 8 steps total.
-- Provide an actionable suggestion in Finish[...].
-
-As an advanced network engineer, you should:
-- Use technical language and thorough reasoning.
-- Start by gathering basic information about the device.
-- Check for recent events to identify immediate issues.
-- Examine the device's configuration for potential problems.
-- Conclude with a comprehensive diagnosis summary.
-"""
-
-    def diagnose_ap(self, ap_name, dnac_region="europe", max_steps=8, to_print=True):
-        """
-        Diagnose an Access Point.
+        # Add trajectory and statistics to info
+        info = info if 'info' in locals() and info else {}
+        info.update({
+            "n_calls": n_calls,
+            "n_badcalls": n_badcalls,
+            "traj": messages
+        })
         
-        Parameters:
-        -----------
-        ap_name : str
-            The name of the access point to diagnose
-        dnac_region : str
-            The DNA Center region (europe, america, asia)
-        max_steps : int
-            Maximum number of steps for the ReAct loop
-        to_print : bool
-            Whether to print diagnostic steps
-            
-        Returns:
-        --------
-        dict: Diagnosis information
-        """
-        return self.diagnose_one(
-            device_name=ap_name,
-            max_steps=max_steps,
-            to_print=to_print,
-            dnac_region=dnac_region,
-            refresh_login_tokens=True
-        )
-
-
-# Example usage:
-if __name__ == "__main__":
-    # This is just a dummy example to show how to use the agent
-    from your_env_module import APEnv
-    
-    # Create environment
-    env = APEnv()
-    
-    # Create agent
-    agent = APAnalystAgent(env)
-    
-    # Run diagnosis
-    result = agent.diagnose_ap("example-ap-01", dnac_region="europe")
-    
-    # Print diagnosis
-    print(f"Diagnosis: {result['diagnosis']}")
+        if to_print:
+            print(info)
+        
+        return r if 'r' in locals() else 0, info
 
 
