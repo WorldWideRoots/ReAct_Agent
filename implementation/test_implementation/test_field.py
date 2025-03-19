@@ -19,6 +19,9 @@ def _react(self, initial_prompt:str, max_num_steps:int=8, to_print:bool=False):
         reward is the final reward from the environment (often 0).
         info is a dict containing logs like "traj" (the conversation messages).
     """
+    
+    # Import regex at the beginning to avoid repeated imports
+    import re
    
     # We store the conversation in 'messages'.
     # initial_prompt should include the instructions + few-shot examples.
@@ -39,7 +42,7 @@ def _react(self, initial_prompt:str, max_num_steps:int=8, to_print:bool=False):
         assistant_text = thought_action_response["choices"][0]["message"]["content"]
        
         if to_print:
-            print(assistant_text)
+            print(f"DEBUG: Raw LLM response: {assistant_text}")
        
         # We try to parse out "Thought X" and "Action X" from the LLM's output
         try:
@@ -56,12 +59,37 @@ def _react(self, initial_prompt:str, max_num_steps:int=8, to_print:bool=False):
                 messages.append({"role": "assistant", "content": f"Thought {i}: {thought_str}"})
                 messages.append({"role": "assistant", "content": f"Action {i}: {action_str}"})
 
+                # Clean the action string - remove any prefix and ensure it's just the command
+                clean_action_str = action_str
+                # Remove any leading "Action X:" if present
+                if clean_action_str.startswith(f"Action {i}:"):
+                    clean_action_str = clean_action_str[len(f"Action {i}:"):].strip()
+                
+                # Look for the actual command syntax in the action string
+                command_match = re.search(r'(GetDeviceInfo\[.+?\]|GetDeviceConfig\[.+?\]|Get1hrEventsForDevice\[.+?\]|Get2dayEventsForDevice\[.+?\]|Finish\[.+?\])', clean_action_str)
+                
+                if command_match:
+                    # If we found a valid command pattern, use just that
+                    clean_action_str = command_match.group(1)
+                    if to_print:
+                        print(f"DEBUG: Extracted command: {clean_action_str}")
+                else:
+                    # No valid command found, report error
+                    obs_str = f"Invalid action: '{action_str}'. Please use one of {self.valid_prefixes}."
+                    messages.append({"role": "system", "content": f"Observation {i}: {obs_str}"})
+                    if to_print:
+                        print(f"DEBUG: No valid command found. Observation {i}: {obs_str}")
+                    continue
+
             else:
                 raise ValueError("Assistant response not in expected Thought/Action format.")
        
         except Exception as e:
             # If parsing fails, we attempt a fallback or re-ask
             n_badcalls += 1
+            if to_print:
+                print(f"DEBUG: Exception in parsing: {e}")
+                
             # e.g. take the first line as thought, re-ask for action
             splitted = assistant_text.strip().split("\n", 1)
             if splitted:
@@ -73,25 +101,37 @@ def _react(self, initial_prompt:str, max_num_steps:int=8, to_print:bool=False):
             action_request_msg = f"Thought {i}: {fallback_thought}\nAction {i}:"
             new_resp = self._llm(messages + [{"role": "user", "content": action_request_msg}])
             action_str = new_resp["choices"][0]["message"]["content"].strip()
+            
+            # Try to extract a valid command from the fallback action
+            command_match = re.search(r'(GetDeviceInfo\[.+?\]|GetDeviceConfig\[.+?\]|Get1hrEventsForDevice\[.+?\]|Get2dayEventsForDevice\[.+?\]|Finish\[.+?\])', action_str)
+            if command_match:
+                clean_action_str = command_match.group(1)
+                if to_print:
+                    print(f"DEBUG: Extracted command from fallback: {clean_action_str}")
+            else:
+                # Still no valid command, report error and continue
+                obs_str = f"Invalid action: '{action_str}'. Please use one of {self.valid_prefixes}."
+                messages.append({"role": "system", "content": f"Observation {i}: {obs_str}"})
+                if to_print:
+                    print(f"DEBUG: No valid command in fallback. Observation {i}: {obs_str}")
+                continue
        
-        # We have an action_str, let's verify it
-        # Extract the actual command from action_str (remove any "Action X:" prefix if exists)
-        clean_action_str = action_str
-        # Check if the action string still contains the "Action i:" prefix and remove it
-        if clean_action_str.startswith(f"Action {i}:"):
-            clean_action_str = clean_action_str[len(f"Action {i}:"):].strip()
-
+        # Now validate and step with the clean action string
         if not any(clean_action_str.startswith(pref) and clean_action_str.endswith("]") for pref in self.valid_prefixes):
             # Invalid action format => we skip or record an error
             obs_str = f"Invalid action: '{action_str}'. Please use one of {self.valid_prefixes}."
             messages.append({"role": "system", "content": f"Observation {i}: {obs_str}"})
             if to_print:
-                print(f"Observation {i}: {obs_str}")
+                print(f"DEBUG: Action validation failed. Observation {i}: {obs_str}")
             # We won't call env.step if invalid
             continue
        
-        # Now let's run the environment step with this cleaned action
+        # Now let's run the environment step with this action
+        if to_print:
+            print(f"DEBUG: Sending to environment: {clean_action_str}")
+            
         obs, r, done_flag, info = self._step(clean_action_str)
+        
         # Format the observation as well
         obs_str = f"Observation {i}: {obs}"
         messages.append({"role": "system", "content": obs_str})
@@ -107,6 +147,9 @@ def _react(self, initial_prompt:str, max_num_steps:int=8, to_print:bool=False):
     # If we finished all steps without done, forcibly finish
     if not done:
         force_finish_action = f"Finish[No conclusion within {max_num_steps} steps. Suggest manual follow-up.]"
+        if to_print:
+            print(f"DEBUG: Forcing finish: {force_finish_action}")
+            
         obs, r, done_flag, info = self._step(force_finish_action)
         messages.append({"role": "system", "content": f"Observation End: {obs}"})
         done = True
@@ -119,8 +162,7 @@ def _react(self, initial_prompt:str, max_num_steps:int=8, to_print:bool=False):
     })
    
     if to_print:
-        print(info)
+        print(f"DEBUG: Final info: {info}")
 
     return r, info
-
 
