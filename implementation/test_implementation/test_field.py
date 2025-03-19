@@ -536,3 +536,181 @@ if __name__ == "__main__":
     
     # Print the diagnosis
     print(f"Diagnosis: {result['diagnosis']}")
+
+
+# ------------------
+def is_valid_action(action_str, valid_prefixes):
+    """
+    Improved action validation that handles edge cases and whitespace issues.
+    
+    Parameters:
+    -----------
+    action_str : str
+        The action string to validate
+    valid_prefixes : list
+        List of valid action prefixes
+        
+    Returns:
+    --------
+    bool: Whether the action is valid
+    """
+    # Strip any whitespace
+    action_str = action_str.strip()
+    
+    # Check if the action ends with "]"
+    if not action_str.endswith("]"):
+        return False
+    
+    # Check if the action starts with any of the valid prefixes
+    for prefix in valid_prefixes:
+        if action_str.startswith(prefix):
+            # Extract the parameter part
+            param_start = len(prefix)
+            param_end = len(action_str) - 1  # Exclude the closing bracket
+            
+            # Make sure there's an actual parameter
+            if param_end > param_start:
+                return True
+                
+    return False
+
+# Enhanced version of the parse_thought_action function
+def parse_thought_action(response_text, step_index):
+    """
+    More robust parsing of thought and action from LLM response.
+    
+    Parameters:
+    -----------
+    response_text : str
+        The raw text response from the LLM
+    step_index : int
+        The current step number
+        
+    Returns:
+    --------
+    tuple: (thought_str, action_str)
+    """
+    import re
+    
+    # Clean up the text
+    response_text = response_text.strip()
+    
+    # Look for thought pattern with flexible whitespace
+    thought_pattern = rf"Thought\s*{step_index}\s*:(.*?)(?:\nAction\s*{step_index}\s*:|$)"
+    thought_match = re.search(thought_pattern, response_text, re.DOTALL)
+    
+    # Look for action pattern with flexible whitespace
+    action_pattern = rf"Action\s*{step_index}\s*:(.*?)$"
+    action_match = re.search(action_pattern, response_text, re.DOTALL)
+    
+    # Extract thought
+    thought_str = ""
+    if thought_match:
+        thought_str = thought_match.group(1).strip()
+    else:
+        # Fallback: take first line or section
+        lines = response_text.split('\n')
+        if lines:
+            thought_str = lines[0].strip()
+            if thought_str.startswith(f"Thought {step_index}:"):
+                thought_str = thought_str[len(f"Thought {step_index}:"):].strip()
+    
+    # Extract action
+    action_str = ""
+    if action_match:
+        action_str = action_match.group(1).strip()
+    
+    return thought_str, action_str
+
+# Here's how to modify the _react method to use these improved functions
+def improved_react(self, initial_prompt, max_num_steps=8, to_print=False):
+    """
+    Enhanced _react method with better action parsing.
+    """
+    messages = [{"role": "system", "content": initial_prompt}]
+    n_calls, n_badcalls = 0, 0
+    done = False
+    
+    for i in range(1, max_num_steps + 1):
+        n_calls += 1
+        user_msg = f"Thought {i}:"
+        messages.append({"role": "user", "content": user_msg})
+        
+        # Call the LLM
+        thought_action_response = self._llm(messages, stop=[f"\nObservation {i}:"])
+        assistant_text = thought_action_response["choices"][0]["message"]["content"]
+        
+        if to_print:
+            print(f"Raw LLM response: {assistant_text}")
+        
+        # Use improved parsing
+        thought_str, action_str = parse_thought_action(assistant_text, i)
+        
+        # If action parsing failed, try a fallback approach
+        if not action_str:
+            n_badcalls += 1
+            # Re-ask specifically for the action
+            action_request_msg = f"Thought {i}: {thought_str}\nAction {i}:"
+            new_resp = self._llm(messages + [{"role": "user", "content": action_request_msg}])
+            action_str = new_resp["choices"][0]["message"]["content"].strip()
+        
+        # Add thought and action to conversation history
+        messages.append({"role": "assistant", "content": f"Thought {i}: {thought_str}"})
+        messages.append({"role": "assistant", "content": f"Action {i}: {action_str}"})
+        
+        # Improved action validation
+        if not is_valid_action(action_str, self.valid_prefixes):
+            # Provide helpful error message with examples
+            example_actions = [f"{prefix}example_param]" for prefix in self.valid_prefixes]
+            obs_str = (f"Invalid action format: '{action_str}'. "
+                      f"Please use one of the following formats: {example_actions}")
+            messages.append({"role": "system", "content": f"Observation {i}: {obs_str}"})
+            if to_print:
+                print(f"Observation {i}: {obs_str}")
+            continue
+        
+        # Execute the action in the environment
+        try:
+            obs, r, done_flag, info = self._step(action_str)
+            obs_str = f"Observation {i}: {obs}"
+        except Exception as e:
+            # Handle execution errors gracefully
+            obs_str = f"Observation {i}: Error executing action: {str(e)}"
+            if to_print:
+                print(f"Action execution error: {e}")
+        
+        messages.append({"role": "system", "content": obs_str})
+        
+        if to_print:
+            print(f"Thought {i}: {thought_str}")
+            print(f"Action {i}: {action_str}")
+            print(f"Observation {i}: {obs if 'obs' in locals() else 'error'}\n")
+        
+        # Check if we're done
+        if 'done_flag' in locals() and done_flag:
+            done = True
+            break
+    
+    # If we finished all steps without done, forcibly finish
+    if not done:
+        force_finish_action = f"Finish[No conclusion within {max_num_steps} steps. Suggest manual follow-up.]"
+        try:
+            obs, r, done_flag, info = self._step(force_finish_action)
+            messages.append({"role": "system", "content": f"Observation End: {obs}"})
+        except Exception as e:
+            messages.append({"role": "system", "content": f"Observation End: Error in final step: {str(e)}"})
+    
+    # Info logging
+    info = info if 'info' in locals() else {}
+    info.update({
+        "n_calls": n_calls,
+        "n_badcalls": n_badcalls,
+        "traj": messages
+    })
+    
+    if to_print:
+        print(info)
+    
+    return r if 'r' in locals() else 0, info
+
+
