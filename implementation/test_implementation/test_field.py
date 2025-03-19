@@ -714,3 +714,144 @@ def improved_react(self, initial_prompt, max_num_steps=8, to_print=False):
     return r if 'r' in locals() else 0, info
 
 
+def normalize_action_string(action_str):
+    """
+    Clean up and normalize action strings from LLM to handle common formatting issues.
+    
+    This function addresses several common patterns where LLMs incorrectly format actions:
+    1. Double "Action X:" prefixes
+    2. Missing brackets in Finish actions
+    3. Extraneous text in action strings
+    
+    Parameters:
+    -----------
+    action_str : str
+        The raw action string from the LLM
+        
+    Returns:
+    --------
+    str: Properly formatted action string
+    """
+    import re
+    
+    # Strip whitespace first
+    action_str = action_str.strip()
+    
+    # 1. Remove duplicate "Action X:" prefixes
+    action_prefix_pattern = r'^Action\s+\d+:\s+'
+    action_str = re.sub(action_prefix_pattern, '', action_str)
+    
+    # 2. Handle Finish action without brackets
+    if action_str.startswith('Finish') and '[' not in action_str:
+        # Extract everything after "Finish"
+        content = action_str[len('Finish'):].strip()
+        # If content doesn't start with '[', wrap everything in brackets
+        if content and not content.startswith('['):
+            return f'Finish["{content}"]'
+    
+    # 3. If it has a valid prefix but no closing bracket, add one
+    valid_prefixes = ['GetDeviceInfo', 'GetDeviceConfig', 'Get1hrEventsForDevice', 
+                      'Get2dayEventsForDevice', 'Finish']
+    
+    for prefix in valid_prefixes:
+        if action_str.startswith(prefix) and '[' in action_str and ']' not in action_str:
+            return f"{action_str}]"
+    
+    # Return the cleaned action string
+    return action_str
+
+
+# Enhanced version of the parse_thought_action function
+def parse_thought_action(response_text, step_index):
+    """
+    More robust parsing of thought and action from LLM response.
+    
+    Parameters:
+    -----------
+    response_text : str
+        The raw text response from the LLM
+    step_index : int
+        The current step number
+        
+    Returns:
+    --------
+    tuple: (thought_str, action_str)
+    """
+    import re
+    
+    # Clean up the text
+    response_text = response_text.strip()
+    
+    # Look for thought pattern with flexible whitespace
+    thought_pattern = rf"(?:Thought\s*{step_index}\s*:)?(.*?)(?:Action\s*{step_index}\s*:|$)"
+    thought_match = re.search(thought_pattern, response_text, re.DOTALL)
+    
+    # Look for action pattern with flexible whitespace
+    action_pattern = rf"Action\s*{step_index}\s*:(.*?)$"
+    action_match = re.search(action_pattern, response_text, re.DOTALL)
+    
+    # Extract thought
+    thought_str = ""
+    if thought_match:
+        thought_str = thought_match.group(1).strip()
+    else:
+        # Fallback: take first line or section
+        lines = response_text.split('\n')
+        if lines:
+            thought_str = lines[0].strip()
+            if thought_str.startswith(f"Thought {step_index}:"):
+                thought_str = thought_str[len(f"Thought {step_index}:"):].strip()
+    
+    # Extract action
+    action_str = ""
+    if action_match:
+        action_str = action_match.group(1).strip()
+        # Apply normalization to fix common formatting issues
+        action_str = normalize_action_string(action_str)
+    
+    return thought_str, action_str
+
+
+def is_valid_action(action_str, valid_prefixes):
+    """
+    Improved action validation that handles edge cases and whitespace issues.
+    
+    Parameters:
+    -----------
+    action_str : str
+        The action string to validate
+    valid_prefixes : list
+        List of valid action prefixes
+        
+    Returns:
+    --------
+    bool: Whether the action is valid
+    """
+    # Apply normalization first to fix formatting issues
+    action_str = normalize_action_string(action_str)
+    
+    # Strip any whitespace
+    action_str = action_str.strip()
+    
+    # Check if the action ends with "]"
+    if not action_str.endswith("]"):
+        return False
+    
+    # Check if the action starts with any of the valid prefixes
+    for prefix in valid_prefixes:
+        if action_str.startswith(prefix):
+            # Extract the parameter part
+            param_start = len(prefix)
+            param_end = len(action_str) - 1  # Exclude the closing bracket
+            
+            # Make sure the parameter is properly enclosed in brackets
+            if not action_str[param_start:param_start+1] == "[":
+                return False
+                
+            # Make sure there's an actual parameter
+            if param_end > param_start + 1:
+                return True
+                
+    return False
+
+
